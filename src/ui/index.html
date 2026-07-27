@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>CDH Store Fleet</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1a2233; --muted: #6b7486;
+    --border: #e3e6ec; --accent: #2563eb; --ok: #16794c; --ok-bg: #e4f5ec;
+    --warn: #92400e; --warn-bg: #fdf1e0; --err: #b3261e; --err-bg: #fbe9e7;
+    --chip-bg: #eef1f6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151c; --panel: #1a1f29; --text: #e7eaf0; --muted: #8b93a5;
+      --border: #2a3140; --accent: #7aa2ff; --ok: #6fd0a0; --ok-bg: #16311f;
+      --warn: #eab308; --warn-bg: #33290f; --err: #f2827a; --err-bg: #3a1d1a;
+      --chip-bg: #232937;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 24px 20px 60px; }
+  header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 18px; }
+  h1 { font-size: 20px; margin: 0; }
+  #summary { color: var(--muted); }
+  form { display: flex; gap: 8px; margin-bottom: 18px; flex-wrap: wrap; }
+  input[type="text"] {
+    flex: 1; min-width: 240px; padding: 8px 12px; border: 1px solid var(--border);
+    border-radius: 8px; background: var(--panel); color: var(--text); font: inherit;
+  }
+  button {
+    padding: 8px 14px; border: 1px solid var(--border); border-radius: 8px;
+    background: var(--panel); color: var(--text); font: inherit; cursor: pointer;
+  }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { color: var(--err); }
+  button:disabled { opacity: .5; cursor: default; }
+  .panel {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 12px; overflow: hidden;
+  }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 10px 14px; border-top: 1px solid var(--border); vertical-align: top; }
+  thead th { border-top: 0; color: var(--muted); font-weight: 600; font-size: 12px;
+    text-transform: uppercase; letter-spacing: .04em; }
+  tbody tr.main:hover { background: color-mix(in srgb, var(--accent) 5%, transparent); cursor: pointer; }
+  .badge { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .badge.ok { color: var(--ok); background: var(--ok-bg); }
+  .badge.off { color: var(--err); background: var(--err-bg); }
+  .chip {
+    display: inline-block; margin: 1px 4px 1px 0; padding: 2px 8px; border-radius: 6px;
+    background: var(--chip-bg); font-size: 12px; cursor: pointer; border: 1px solid transparent;
+  }
+  .chip:hover { border-color: var(--accent); }
+  .tag { font-size: 11px; color: var(--muted); border: 1px solid var(--border);
+    border-radius: 4px; padding: 0 5px; margin-left: 6px; }
+  .muted { color: var(--muted); }
+  .mono { font-family: ui-monospace, "Cascadia Code", Menlo, monospace; font-size: 12px; }
+  .events td { background: color-mix(in srgb, var(--chip-bg) 55%, transparent); padding: 8px 14px 12px; }
+  .events ul { margin: 0; padding: 0; list-style: none; }
+  .events li { padding: 3px 0; border-bottom: 1px dashed var(--border); }
+  .events li:last-child { border-bottom: 0; }
+  .ev { font-weight: 600; margin-right: 8px; }
+  .ev.applied, .ev.reconciled { color: var(--ok); }
+  .ev.skipped { color: var(--muted); }
+  .ev.gap { color: var(--warn); }
+  .ev.failed, .ev.dropped { color: var(--err); }
+  .empty { padding: 28px; text-align: center; color: var(--muted); }
+  dialog {
+    max-width: min(720px, 90vw); max-height: 80vh; border: 1px solid var(--border);
+    border-radius: 12px; background: var(--panel); color: var(--text); padding: 0;
+  }
+  dialog::backdrop { background: rgba(0,0,0,.45); }
+  dialog header { display: flex; justify-content: space-between; align-items: center;
+    padding: 12px 16px; margin: 0; border-bottom: 1px solid var(--border); }
+  dialog pre { margin: 0; padding: 16px; overflow: auto; max-height: 65vh; }
+  #toast {
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+    background: var(--text); color: var(--bg); padding: 9px 18px; border-radius: 8px;
+    opacity: 0; transition: opacity .25s; pointer-events: none; max-width: 90vw;
+  }
+  #toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>CDH Store Fleet</h1>
+    <span id="summary">loading…</span>
+  </header>
+
+  <form id="addForm">
+    <input type="text" id="codes" placeholder="Add store codes, comma-separated — e.g. S004, S005, KFCCAV07" />
+    <button type="submit" class="primary">Add stores</button>
+  </form>
+
+  <div class="panel">
+    <table>
+      <thead>
+        <tr>
+          <th>Store</th><th>Status</th><th>Queue</th>
+          <th>Applied datasets</th><th>Last activity</th><th></th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div id="empty" class="empty" hidden>No stores yet — add codes above to spin up virtual stores.</div>
+  </div>
+</div>
+
+<dialog id="dsDialog">
+  <header><strong id="dsTitle"></strong><button onclick="dsDialog.close()">Close</button></header>
+  <pre class="mono" id="dsBody"></pre>
+</dialog>
+<div id="toast"></div>
+
+<script>
+const rows = document.getElementById('rows');
+const empty = document.getElementById('empty');
+const summary = document.getElementById('summary');
+const expanded = new Set();
+let stores = [];
+
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
+  ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+
+function toast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(el._t);
+  el._t = setTimeout(() => el.classList.remove('show'), 3500);
+}
+
+async function api(path, opts) {
+  const res = await fetch(path, opts);
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.message || res.statusText);
+  return body;
+}
+
+function render() {
+  empty.hidden = stores.length > 0;
+  summary.textContent = stores.length
+    ? `${stores.length} store(s) · ${stores.filter((s) => s.running).length} running`
+    : '';
+  rows.innerHTML = stores.map((s) => {
+    const applied = Object.entries(s.applied);
+    const chips = applied.length
+      ? applied.map(([type, v]) =>
+          `<span class="chip" data-ds="${esc(s.storeCode)}|${esc(type)}"
+             title="hash ${esc(v.contentHash || '')} · ${esc(v.appliedAt || '')}">${esc(type)} v${v.version}</span>`).join('')
+      : '<span class="muted">none yet</span>';
+    const last = s.recentEvents[0];
+    const evRow = expanded.has(s.storeCode)
+      ? `<tr class="events"><td colspan="6"><ul>` +
+        (s.recentEvents.length
+          ? s.recentEvents.map((e) =>
+              `<li><span class="ev ${esc(e.type)}">${esc(e.type.toUpperCase())}</span>` +
+              `${esc(e.message)} <span class="muted mono">${esc(e.at.replace('T', ' ').slice(0, 19))}</span></li>`).join('')
+          : '<li class="muted">no activity yet</li>') +
+        `</ul></td></tr>`
+      : '';
+    return `
+      <tr class="main" data-code="${esc(s.storeCode)}">
+        <td><strong>${esc(s.storeCode)}</strong>${s.fromEnv ? '<span class="tag">env</span>' : ''}</td>
+        <td><span class="badge ${s.running ? 'ok' : 'off'}">${s.running ? 'consuming' : 'stopped'}</span></td>
+        <td class="mono">${esc(s.queue)}<br/><span class="muted">${s.queueStats
+          ? `${s.queueStats.messageCount} msg · ${s.queueStats.consumerCount} consumer(s)` : '—'}</span></td>
+        <td>${chips}</td>
+        <td>${last
+          ? `<span class="ev ${esc(last.type)}">${esc(last.type.toUpperCase())}</span> ${esc(last.message)}`
+          : '<span class="muted">—</span>'}</td>
+        <td style="white-space:nowrap">
+          <button data-stop="${esc(s.storeCode)}" title="Stop consuming; keep queue (offline store)">Stop</button>
+          <button class="danger" data-purge="${esc(s.storeCode)}" title="Stop and DELETE the broker queue">Purge</button>
+        </td>
+      </tr>${evRow}`;
+  }).join('');
+}
+
+async function refresh() {
+  try {
+    stores = (await api('/api/fleet')).stores
+      .sort((a, b) => a.storeCode.localeCompare(b.storeCode));
+    render();
+  } catch (e) {
+    summary.textContent = `refresh failed: ${e.message}`;
+  }
+}
+
+document.getElementById('addForm').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const input = document.getElementById('codes');
+  if (!input.value.trim()) return;
+  try {
+    const { added } = await api('/api/fleet/stores', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ storeCodes: input.value }),
+    });
+    toast(added.length ? `Added: ${added.join(', ')}` : 'Already in fleet');
+    input.value = '';
+    refresh();
+  } catch (e) { toast(e.message); }
+});
+
+rows.addEventListener('click', async (ev) => {
+  const stop = ev.target.closest('[data-stop]');
+  const purge = ev.target.closest('[data-purge]');
+  const chip = ev.target.closest('[data-ds]');
+  if (stop || purge) {
+    ev.stopPropagation();
+    const code = (stop || purge).dataset.stop || (stop || purge).dataset.purge;
+    if (purge && !confirm(`Delete ${code}'s broker queue? Pending messages are lost.`)) return;
+    try {
+      await api(`/api/fleet/stores/${code}?purge=${!!purge}`, { method: 'DELETE' });
+      toast(purge ? `Purged ${code}` : `Stopped ${code} (queue kept)`);
+      expanded.delete(code);
+      refresh();
+    } catch (e) { toast(e.message); }
+    return;
+  }
+  if (chip) {
+    ev.stopPropagation();
+    const [code, type] = chip.dataset.ds.split('|');
+    try {
+      const data = await api(`/api/fleet/stores/${code}/datasets/${type}`);
+      document.getElementById('dsTitle').textContent = `${code} · ${type}`;
+      document.getElementById('dsBody').textContent = JSON.stringify(data, null, 2);
+      document.getElementById('dsDialog').showModal();
+    } catch (e) { toast(e.message); }
+    return;
+  }
+  const row = ev.target.closest('tr.main');
+  if (row) {
+    const code = row.dataset.code;
+    expanded.has(code) ? expanded.delete(code) : expanded.add(code);
+    render();
+  }
+});
+
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>

@@ -1,0 +1,35 @@
+{
+  "name": "fusion-cdh-store-consumer",
+  "version": "0.1.0",
+  "description": "External store-edge consumer tester for the Fusion CDH data-sync pipeline. Hosts one or many virtual stores that consume versioned dataset envelopes from the cdh.datasync exchange.",
+  "private": true,
+  "license": "UNLICENSED",
+  "scripts": {
+    "build": "nest build",
+    "format": "prettier --write \"src/**/*.ts\"",
+    "start": "nest start",
+    "start:dev": "nest start --watch",
+    "start:prod": "node dist/main"
+  },
+  "dependencies": {
+    "@nestjs/common": "^11.0.1",
+    "@nestjs/config": "^4.0.2",
+    "@nestjs/core": "^11.0.1",
+    "@nestjs/platform-express": "^11.0.1",
+    "amqp-connection-manager": "^4.1.14",
+    "amqplib": "^0.10.8",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.1"
+  },
+  "devDependencies": {
+    "@nestjs/cli": "^11.0.0",
+    "@types/amqplib": "^0.10.7",
+    "@types/node": "^22.10.7",
+    "prettier": "^3.4.2",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.7.3"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

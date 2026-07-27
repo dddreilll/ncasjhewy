@@ -1,0 +1,65 @@
+# Fleet mode: one container per store — the production-faithful shape, since
+# real stores are physically separate machines. Every container is the same
+# image; only STORE_CODES differs. Joins the fusion-cdh-api compose network so
+# edges reach the head-office RabbitMQ at rabbitmq:5672.
+#
+# Simulator mode (N virtual stores in ONE container/process) is the
+# store-fleet-sim service below — comment the per-store services out and use
+# that instead, or just run `npm run start:dev` on the host with
+# STORE_CODES=S001,...,S050.
+
+x-edge-base: &edge-base
+  build: .
+  restart: unless-stopped
+  environment: &edge-env
+    RABBITMQ_USER: admin
+    RABBITMQ_PASSWORD: admin123
+    RABBITMQ_HOST: rabbitmq
+    RABBITMQ_PORT: '5672'
+    DATA_DIR: /app/data
+  volumes:
+    - ./data:/app/data
+  networks:
+    - foodgroup_network
+
+services:
+  store-edge-s001:
+    <<: *edge-base
+    container_name: store-edge-s001
+    ports:
+      - '4001:4000' # fleet dashboard
+    environment:
+      <<: *edge-env
+      STORE_CODES: S001
+
+  store-edge-s002:
+    <<: *edge-base
+    container_name: store-edge-s002
+    ports:
+      - '4002:4000'
+    environment:
+      <<: *edge-env
+      STORE_CODES: S002
+
+  store-edge-s003:
+    <<: *edge-base
+    container_name: store-edge-s003
+    ports:
+      - '4003:4000'
+    environment:
+      <<: *edge-env
+      STORE_CODES: S003
+
+  # store-fleet-sim:
+  #   <<: *edge-base
+  #   container_name: store-fleet-sim
+  #   ports:
+  #     - '4000:4000'
+  #   environment:
+  #     <<: *edge-env
+  #     STORE_CODES: S001,S002,S003,S004,S005,S006,S007,S008,S009,S010
+
+networks:
+  foodgroup_network:
+    external: true
+    name: fusion-cdh-api_foodgroup_network
