@@ -14,8 +14,13 @@ import { FleetService, StoreStatus } from './fleet.service';
  *
  *   GET    /api/fleet                                  fleet status
  *   POST   /api/fleet/stores { storeCodes }            add stores (string or string[])
- *   DELETE /api/fleet/stores/:code?purge=true          stop (purge → delete queue too)
+ *   POST   /api/fleet/stores/:code/stop                pause consuming — stays listed as "stopped", queue kept
+ *   POST   /api/fleet/stores/:code/start               resume consuming a stopped store
+ *   DELETE /api/fleet/stores/:code?delete=true          remove from the fleet entirely (delete → delete queue too)
+ *   POST   /api/fleet/stores/:code/purge                empty the queue only — keeps queue, bindings, and consumer
  *   GET    /api/fleet/stores/:code/datasets/:type      inspect an applied dataset
+ *   DELETE /api/fleet/stores/:code/datasets/:type      wipe one locally applied dataset (state + file only)
+ *   DELETE /api/fleet/stores/:code/datasets            wipe every locally applied dataset for the store
  */
 @Controller('api/fleet')
 export class FleetController {
@@ -36,14 +41,38 @@ export class FleetController {
     return { added: await this.fleet.addStores(codes) };
   }
 
+  @Post('stores/:code/stop')
+  async stop(
+    @Param('code') code: string,
+  ): Promise<{ storeCode: string; running: false }> {
+    await this.fleet.stopStore(code);
+    return { storeCode: code, running: false };
+  }
+
+  @Post('stores/:code/start')
+  async start(
+    @Param('code') code: string,
+  ): Promise<{ storeCode: string; running: true }> {
+    await this.fleet.startStore(code);
+    return { storeCode: code, running: true };
+  }
+
   @Delete('stores/:code')
   async remove(
     @Param('code') code: string,
-    @Query('purge') purge?: string,
-  ): Promise<{ removed: string; purged: boolean }> {
-    const purged = purge === 'true' || purge === '1';
-    await this.fleet.removeStore(code, purged);
-    return { removed: code, purged };
+    @Query('delete') deleteParam?: string,
+  ): Promise<{ removed: string; deleted: boolean }> {
+    const deleteQueue = deleteParam === 'true' || deleteParam === '1';
+    await this.fleet.removeStore(code, deleteQueue);
+    return { removed: code, deleted: deleteQueue };
+  }
+
+  @Post('stores/:code/purge')
+  async purge(
+    @Param('code') code: string,
+  ): Promise<{ storeCode: string; messageCount: number }> {
+    const { messageCount } = await this.fleet.purgeQueue(code);
+    return { storeCode: code, messageCount };
   }
 
   @Get('stores/:code/datasets/:type')
@@ -52,5 +81,22 @@ export class FleetController {
     @Param('type') type: string,
   ): Promise<unknown> {
     return this.fleet.readDataset(code, type);
+  }
+
+  @Delete('stores/:code/datasets/:type')
+  async wipeDataset(
+    @Param('code') code: string,
+    @Param('type') type: string,
+  ): Promise<{ storeCode: string; datasetType: string; wiped: true }> {
+    await this.fleet.wipeDataset(code, type);
+    return { storeCode: code, datasetType: type, wiped: true };
+  }
+
+  @Delete('stores/:code/datasets')
+  async wipeAllDatasets(
+    @Param('code') code: string,
+  ): Promise<{ storeCode: string; wiped: true }> {
+    await this.fleet.wipeAllDatasets(code);
+    return { storeCode: code, wiped: true };
   }
 }

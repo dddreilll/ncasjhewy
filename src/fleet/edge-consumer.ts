@@ -25,7 +25,7 @@ export interface EdgeConsumerOptions {
 
 export interface EdgeEvent {
   at: string;
-  type: 'applied' | 'skipped' | 'gap' | 'failed' | 'reconciled' | 'dropped';
+  type: 'applied' | 'skipped' | 'gap' | 'failed' | 'reconciled' | 'dropped' | 'wiped';
   message: string;
 }
 
@@ -110,11 +110,35 @@ export class EdgeConsumer {
         );
       },
     });
+    this.channelWrapper.on('error', (err) =>
+      this.logger.error(`Channel error: ${err?.message}`),
+    );
   }
 
   async stop(): Promise<void> {
     this.running = false;
     await this.channelWrapper?.close();
+  }
+
+  /**
+   * Delete the locally applied copy of one dataset (state + file) without
+   * touching the broker queue or consumer — purely local, so the next
+   * matching message (redelivery, rebroadcast, or reconcile pull) re-applies
+   * it from scratch as if this store had never seen it.
+   */
+  async wipeDataset(datasetType: string): Promise<void> {
+    await this.appliedStore.clear(datasetType);
+    await this.applier.deleteDataset(datasetType);
+    this.logger.warn(`Wiped local dataset ${datasetType} (state + file)`);
+    this.record('wiped', `${datasetType} wiped`);
+  }
+
+  /** Same as wipeDataset() but for every dataset this store has applied. */
+  async wipeAllDatasets(): Promise<void> {
+    await this.appliedStore.clearAll();
+    await this.applier.deleteAllDatasets();
+    this.logger.warn('Wiped ALL locally applied datasets (state + files)');
+    this.record('wiped', 'All datasets wiped');
   }
 
   private async handleMessage(msg: ConsumeMessage | null): Promise<void> {

@@ -63,9 +63,14 @@ runtime are persisted to `data/fleet.json` and rejoin on restart. Env
 | `GET /` | Dashboard UI |
 | `GET /api/fleet` | Fleet status: per store — running, queue depth/consumers, applied versions, recent events |
 | `POST /api/fleet/stores` `{"storeCodes":"S004,S005"}` | Spin up new virtual stores on the fly |
-| `DELETE /api/fleet/stores/:code` | Stop a store, **keep** its queue (offline store — catches up on restart) |
-| `DELETE /api/fleet/stores/:code?purge=true` | Decommission: stop + delete the broker queue |
+| `POST /api/fleet/stores/:code/stop` | Pause consuming — stays listed as "stopped", queue and registry entry kept |
+| `POST /api/fleet/stores/:code/start` | Resume consuming for a stopped store |
+| `DELETE /api/fleet/stores/:code` | Remove a store from the fleet entirely (untracked, won't rejoin on restart); **keeps** its queue |
+| `DELETE /api/fleet/stores/:code?delete=true` | Same, and also deletes the broker queue |
+| `POST /api/fleet/stores/:code/purge` | Empty the store's pending messages; queue, bindings, and consumer are kept |
 | `GET /api/fleet/stores/:code/datasets/:type` | Inspect a store's applied dataset |
+| `DELETE /api/fleet/stores/:code/datasets/:type` | Wipe one locally applied dataset (state + file only) — re-applies from the next matching message |
+| `DELETE /api/fleet/stores/:code/datasets` | Wipe every locally applied dataset for the store |
 
 Adding a store declares its durable queue immediately, so it receives
 everything published from that moment; history before that needs the reconcile

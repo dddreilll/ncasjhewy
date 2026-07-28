@@ -68,7 +68,7 @@
   .ev { font-weight: 600; margin-right: 8px; }
   .ev.applied, .ev.reconciled { color: var(--ok); }
   .ev.skipped { color: var(--muted); }
-  .ev.gap { color: var(--warn); }
+  .ev.gap, .ev.wiped { color: var(--warn); }
   .ev.failed, .ev.dropped { color: var(--err); }
   .empty { padding: 28px; text-align: center; color: var(--muted); }
   dialog {
@@ -90,7 +90,7 @@
 <body>
 <div class="wrap">
   <header>
-    <h1>CDH Store Fleet</h1>
+    <h1>CDH Multi-store Simulator</h1>
     <span id="summary">loading…</span>
   </header>
 
@@ -114,7 +114,13 @@
 </div>
 
 <dialog id="dsDialog">
-  <header><strong id="dsTitle"></strong><button onclick="dsDialog.close()">Close</button></header>
+  <header>
+    <strong id="dsTitle"></strong>
+    <span>
+      <button class="danger" id="dsWipeBtn" title="Delete this store's locally applied copy (state + file); the queue is untouched">Wipe</button>
+      <button onclick="dsDialog.close()">Close</button>
+    </span>
+  </header>
   <pre class="mono" id="dsBody"></pre>
 </dialog>
 <div id="toast"></div>
@@ -125,6 +131,7 @@ const empty = document.getElementById('empty');
 const summary = document.getElementById('summary');
 const expanded = new Set();
 let stores = [];
+let currentDs = null;
 
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
   ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
@@ -177,8 +184,12 @@ function render() {
           ? `<span class="ev ${esc(last.type)}">${esc(last.type.toUpperCase())}</span> ${esc(last.message)}`
           : '<span class="muted">—</span>'}</td>
         <td style="white-space:nowrap">
-          <button data-stop="${esc(s.storeCode)}" title="Stop consuming; keep queue (offline store)">Stop</button>
-          <button class="danger" data-purge="${esc(s.storeCode)}" title="Stop and DELETE the broker queue">Purge</button>
+          ${s.running
+            ? `<button data-stop="${esc(s.storeCode)}" title="Pause consuming; queue is kept and the store stays listed as stopped">Stop</button>`
+            : `<button class="primary" data-start="${esc(s.storeCode)}" title="Resume consuming">Start</button>`}
+          <button data-purge="${esc(s.storeCode)}" title="Empty the queue's pending messages; queue, bindings, and consumer are untouched">Purge</button>
+          <button class="danger" data-wipe-all="${esc(s.storeCode)}" title="Delete ALL locally applied datasets (state + files); the queue and consumer are untouched">Wipe All</button>
+          <button class="danger" data-delete="${esc(s.storeCode)}" title="Remove from the fleet and DELETE the broker queue">Delete</button>
         </td>
       </tr>${evRow}`;
   }).join('');
@@ -212,16 +223,51 @@ document.getElementById('addForm').addEventListener('submit', async (ev) => {
 
 rows.addEventListener('click', async (ev) => {
   const stop = ev.target.closest('[data-stop]');
+  const start = ev.target.closest('[data-start]');
+  const del = ev.target.closest('[data-delete]');
   const purge = ev.target.closest('[data-purge]');
+  const wipeAll = ev.target.closest('[data-wipe-all]');
   const chip = ev.target.closest('[data-ds]');
-  if (stop || purge) {
+  if (wipeAll) {
     ev.stopPropagation();
-    const code = (stop || purge).dataset.stop || (stop || purge).dataset.purge;
-    if (purge && !confirm(`Delete ${code}'s broker queue? Pending messages are lost.`)) return;
+    const code = wipeAll.dataset.wipeAll;
+    if (!confirm(`Wipe ALL locally applied datasets for ${code}? Local state and files are deleted; the queue is untouched, but the store needs a fresh snapshot to catch back up.`)) return;
     try {
-      await api(`/api/fleet/stores/${code}?purge=${!!purge}`, { method: 'DELETE' });
-      toast(purge ? `Purged ${code}` : `Stopped ${code} (queue kept)`);
+      await api(`/api/fleet/stores/${code}/datasets`, { method: 'DELETE' });
+      toast(`Wiped all datasets for ${code}`);
+      refresh();
+    } catch (e) { toast(e.message); }
+    return;
+  }
+  if (stop || start) {
+    ev.stopPropagation();
+    const code = (stop || start).dataset.stop || (stop || start).dataset.start;
+    try {
+      await api(`/api/fleet/stores/${code}/${stop ? 'stop' : 'start'}`, { method: 'POST' });
+      toast(stop ? `Stopped ${code} (queue kept)` : `Resumed ${code}`);
+      refresh();
+    } catch (e) { toast(e.message); }
+    return;
+  }
+  if (del) {
+    ev.stopPropagation();
+    const code = del.dataset.delete;
+    if (!confirm(`Remove ${code} from the fleet and delete its broker queue? Pending messages are lost.`)) return;
+    try {
+      await api(`/api/fleet/stores/${code}?delete=true`, { method: 'DELETE' });
+      toast(`Deleted ${code}'s queue`);
       expanded.delete(code);
+      refresh();
+    } catch (e) { toast(e.message); }
+    return;
+  }
+  if (purge) {
+    ev.stopPropagation();
+    const code = purge.dataset.purge;
+    if (!confirm(`Purge ${code}'s pending messages? The queue and consumer are kept.`)) return;
+    try {
+      const { messageCount } = await api(`/api/fleet/stores/${code}/purge`, { method: 'POST' });
+      toast(`Purged ${messageCount} message(s) from ${code}`);
       refresh();
     } catch (e) { toast(e.message); }
     return;
@@ -231,6 +277,7 @@ rows.addEventListener('click', async (ev) => {
     const [code, type] = chip.dataset.ds.split('|');
     try {
       const data = await api(`/api/fleet/stores/${code}/datasets/${type}`);
+      currentDs = { code, type };
       document.getElementById('dsTitle').textContent = `${code} · ${type}`;
       document.getElementById('dsBody').textContent = JSON.stringify(data, null, 2);
       document.getElementById('dsDialog').showModal();
@@ -243,6 +290,20 @@ rows.addEventListener('click', async (ev) => {
     expanded.has(code) ? expanded.delete(code) : expanded.add(code);
     render();
   }
+});
+
+document.getElementById('dsDialog').addEventListener('close', () => { currentDs = null; });
+
+document.getElementById('dsWipeBtn').addEventListener('click', async () => {
+  if (!currentDs) return;
+  const { code, type } = currentDs;
+  if (!confirm(`Wipe ${code}'s local ${type} dataset? Local state and file are deleted; the queue is untouched, but the store needs a fresh snapshot to re-apply it.`)) return;
+  try {
+    await api(`/api/fleet/stores/${code}/datasets/${type}`, { method: 'DELETE' });
+    toast(`Wiped ${type} for ${code}`);
+    document.getElementById('dsDialog').close();
+    refresh();
+  } catch (e) { toast(e.message); }
 });
 
 refresh();

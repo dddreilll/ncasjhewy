@@ -43,6 +43,7 @@ export class FleetService implements OnModuleInit, OnModuleDestroy {
   private connection?: AmqpConnectionManager;
   private adminChannel?: ChannelWrapper;
   private readonly consumers = new Map<string, EdgeConsumer>();
+  private readonly deleting = new Set<string>();
   private registry!: FleetRegistry;
   private envCodes: string[] = [];
 
@@ -60,6 +61,9 @@ export class FleetService implements OnModuleInit, OnModuleDestroy {
       this.logger.warn(`Fleet disconnected: ${err?.message}`),
     );
     this.adminChannel = this.connection.createChannel({ json: false });
+    this.adminChannel.on('error', (err) =>
+      this.logger.error(`Admin channel error: ${err?.message}`),
+    );
 
     const bootCodes = [
       ...new Set([...this.envCodes, ...(await this.registry.load())]),
@@ -101,11 +105,18 @@ export class FleetService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Stop a store. purge=false parks it (durable queue keeps accumulating so it
-   * can catch up later); purge=true decommissions it — deletes the broker
-   * queue. Local data/<code> files are kept either way for post-mortem.
+   * Remove a store from the fleet entirely — untracked from the dashboard and
+   * dropped from the registry, so it will NOT rejoin on restart (unlike
+   * stopStore(), which only pauses it). deleteQueue=true also deletes the
+   * broker queue outright; deleteQueue=false leaves the queue as-is (e.g. a
+   * real external consumer, like fusion-cdh-store, is still using it) and
+   * only stops this dashboard from tracking/consuming it. Local data/<code>
+   * files are kept either way for post-mortem. Deleting the queue is
+   * destructive to any other live consumer on it (broker sends that consumer
+   * a basic.cancel) — use purgeQueue() instead when the intent is only to
+   * drop pending messages.
    */
-  async removeStore(storeCode: string, purge: boolean): Promise<void> {
+  async removeStore(storeCode: string, deleteQueue: boolean): Promise<void> {
     const consumer = this.consumers.get(storeCode);
     if (!consumer) {
       throw new NotFoundException(`Store ${storeCode} is not in the fleet`);
@@ -115,14 +126,66 @@ export class FleetService implements OnModuleInit, OnModuleDestroy {
     this.consumers.delete(storeCode);
     await this.registry.save([...this.consumers.keys()]);
 
-    if (purge) {
-      await this.adminChannel?.deleteQueue(consumer.queueName);
-      this.logger.log(`Removed ${storeCode} and deleted ${consumer.queueName}`);
+    if (deleteQueue) {
+      this.deleting.add(consumer.queueName);
+      try {
+        await this.adminChannel?.deleteQueue(consumer.queueName);
+        this.logger.log(`Removed ${storeCode} and deleted ${consumer.queueName}`);
+      } finally {
+        this.deleting.delete(consumer.queueName);
+      }
     } else {
       this.logger.log(
-        `Stopped ${storeCode} — queue ${consumer.queueName} kept (offline store)`,
+        `Removed ${storeCode} from the fleet — queue ${consumer.queueName} kept`,
       );
     }
+  }
+
+  /**
+   * Pause consuming WITHOUT leaving the fleet — unlike removeStore(), the
+   * store stays listed (as "stopped") and in the registry, so it rejoins
+   * consuming automatically on app restart; within a running process it stays
+   * paused until startStore() resumes it. The queue itself is untouched.
+   */
+  async stopStore(storeCode: string): Promise<void> {
+    const consumer = this.consumers.get(storeCode);
+    if (!consumer) {
+      throw new NotFoundException(`Store ${storeCode} is not in the fleet`);
+    }
+    if (!consumer.isRunning) return;
+
+    await consumer.stop();
+    this.logger.log(`Stopped ${storeCode} — queue ${consumer.queueName} kept, still listed`);
+  }
+
+  /** Resume consuming for a store previously paused with stopStore(). */
+  async startStore(storeCode: string): Promise<void> {
+    const consumer = this.consumers.get(storeCode);
+    if (!consumer) {
+      throw new NotFoundException(`Store ${storeCode} is not in the fleet`);
+    }
+    if (consumer.isRunning) return;
+
+    consumer.start();
+    this.logger.log(`Resumed ${storeCode}`);
+  }
+
+  /**
+   * Empty a store's queue without deleting it, unbinding it, or touching its
+   * consumer — the queue keeps existing, stays bound, and any live consumer
+   * (this fleet's own EdgeConsumer or an external one like fusion-cdh-store)
+   * is left running and unaffected. Safe to call on a running store.
+   */
+  async purgeQueue(storeCode: string): Promise<{ messageCount: number }> {
+    const consumer = this.consumers.get(storeCode);
+    if (!consumer) {
+      throw new NotFoundException(`Store ${storeCode} is not in the fleet`);
+    }
+
+    const reply = await this.adminChannel?.purgeQueue(consumer.queueName);
+    const messageCount = reply?.messageCount ?? 0;
+    this.logger.log(`Purged ${messageCount} message(s) from ${consumer.queueName}`);
+    return { messageCount };
   }
 
   async fleetStatus(): Promise<StoreStatus[]> {
@@ -159,6 +222,30 @@ export class FleetService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  /**
+   * Delete a store's locally applied dataset (state + file) without touching
+   * the broker queue/consumer — purely local. Distinct from purgeQueue()
+   * (empties pending broker messages) and removeStore(..., true) (deletes the
+   * broker queue): this only resets what the store thinks it has already
+   * applied, so the next matching message re-applies it as if fresh.
+   */
+  async wipeDataset(storeCode: string, datasetType: string): Promise<void> {
+    const consumer = this.consumers.get(storeCode);
+    if (!consumer) {
+      throw new NotFoundException(`Store ${storeCode} is not in the fleet`);
+    }
+    await consumer.wipeDataset(datasetType);
+  }
+
+  /** Same as wipeDataset() but for every dataset the store has applied. */
+  async wipeAllDatasets(storeCode: string): Promise<void> {
+    const consumer = this.consumers.get(storeCode);
+    if (!consumer) {
+      throw new NotFoundException(`Store ${storeCode} is not in the fleet`);
+    }
+    await consumer.wipeAllDatasets();
+  }
+
   private startConsumer(storeCode: string): void {
     const dataDir = this.config.getDataDir();
     const edgeLogger = new Logger(`Edge:${storeCode}`);
@@ -182,11 +269,13 @@ export class FleetService implements OnModuleInit, OnModuleDestroy {
     this.consumers.set(storeCode, consumer);
   }
 
-  // checkQueue on a missing queue faults the channel; amqp-connection-manager
-  // re-opens it, so a null here is cosmetic (stats show as unknown once).
   private async queueStats(
     queue: string,
   ): Promise<{ messageCount: number; consumerCount: number } | null> {
+    // checkQueue is a passive declare — on a queue mid-delete it faults the
+    // whole admin channel (404 closes the channel, not just the call), so
+    // skip it entirely while a delete for this queue is in flight.
+    if (this.deleting.has(queue)) return null;
     try {
       const reply = await this.adminChannel?.checkQueue(queue);
       return reply

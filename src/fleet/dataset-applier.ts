@@ -1,5 +1,5 @@
 import { Logger } from '@nestjs/common';
-import { mkdir, readFile, rename, writeFile } from 'fs/promises';
+import { mkdir, readFile, rename, rm, writeFile } from 'fs/promises';
 import { dirname, join } from 'path';
 import {
   computeContentHash,
@@ -10,6 +10,8 @@ import {
 export interface DatasetApplier {
   applySnapshot(message: SyncMessage): Promise<void>;
   applyPartial(message: SyncMessage): Promise<void>;
+  deleteDataset(datasetType: string): Promise<void>;
+  deleteAllDatasets(): Promise<void>;
 }
 
 interface StoredDataset {
@@ -131,6 +133,14 @@ export class FileDatasetApplier implements DatasetApplier {
         `contentHash mismatch on ${message.datasetType} v${message.version}: message=${message.contentHash.slice(0, 12)} computed=${actual.slice(0, 12)}`,
       );
     }
+  }
+
+  async deleteDataset(datasetType: string): Promise<void> {
+    await rm(this.fileFor(datasetType), { force: true });
+  }
+
+  async deleteAllDatasets(): Promise<void> {
+    await rm(this.datasetsDir, { recursive: true, force: true });
   }
 
   private fileFor(datasetType: string): string {

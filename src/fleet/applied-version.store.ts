@@ -11,6 +11,8 @@ export interface AppliedVersionStore {
   get(datasetType: string): Promise<AppliedVersion>;
   set(datasetType: string, version: number, contentHash: string): Promise<void>;
   all(): Promise<Record<string, AppliedVersion>>;
+  clear(datasetType: string): Promise<void>;
+  clearAll(): Promise<void>;
 }
 
 /**
@@ -49,6 +51,17 @@ export class FileAppliedVersionStore implements AppliedVersionStore {
       appliedAt: new Date().toISOString(),
     };
     await this.persist(state);
+  }
+
+  async clear(datasetType: string): Promise<void> {
+    const state = await this.load();
+    delete state[datasetType];
+    await this.persist(state);
+  }
+
+  async clearAll(): Promise<void> {
+    this.cache = {};
+    await this.persist(this.cache);
   }
 
   private async load(): Promise<Record<string, AppliedVersion>> {
