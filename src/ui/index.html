@@ -28,11 +28,22 @@
   header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 18px; }
   h1 { font-size: 20px; margin: 0; }
   #summary { color: var(--muted); }
-  form { display: flex; gap: 8px; margin-bottom: 18px; flex-wrap: wrap; }
+  form { display: flex; gap: 8px; margin-bottom: 18px; flex-wrap: wrap; align-items: center; }
   input[type="text"] {
     flex: 1; min-width: 240px; padding: 8px 12px; border: 1px solid var(--border);
     border-radius: 8px; background: var(--panel); color: var(--text); font: inherit;
   }
+  select {
+    padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px;
+    background: var(--panel); color: var(--text); font: inherit;
+  }
+  .trigger-panel { padding: 14px 16px; margin-bottom: 18px; }
+  .trigger-panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em;
+    color: var(--muted); margin: 0 0 10px; }
+  .trigger-panel form { margin-bottom: 0; }
+  .trigger-panel label { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .trigger-panel.disabled { color: var(--muted); font-size: 13px; }
+  .trigger-panel.disabled code { font-family: ui-monospace, "Cascadia Code", Menlo, monospace; }
   button {
     padding: 8px 14px; border: 1px solid var(--border); border-radius: 8px;
     background: var(--panel); color: var(--text); font: inherit; cursor: pointer;
@@ -57,6 +68,7 @@
     background: var(--chip-bg); font-size: 12px; cursor: pointer; border: 1px solid transparent;
   }
   .chip:hover { border-color: var(--accent); }
+  .chip.warn { background: var(--warn-bg); color: var(--warn); }
   .tag { font-size: 11px; color: var(--muted); border: 1px solid var(--border);
     border-radius: 4px; padding: 0 5px; margin-left: 6px; }
   .muted { color: var(--muted); }
@@ -66,15 +78,16 @@
   .events li { padding: 3px 0; border-bottom: 1px dashed var(--border); }
   .events li:last-child { border-bottom: 0; }
   .ev { font-weight: 600; margin-right: 8px; }
-  .ev.applied, .ev.reconciled { color: var(--ok); }
+  .ev.applied { color: var(--ok); }
   .ev.skipped { color: var(--muted); }
-  .ev.gap, .ev.wiped { color: var(--warn); }
+  .ev.gap, .ev.wiped, .ev.armed { color: var(--warn); }
   .ev.failed, .ev.dropped { color: var(--err); }
   .empty { padding: 28px; text-align: center; color: var(--muted); }
   dialog {
     max-width: min(720px, 90vw); max-height: 80vh; border: 1px solid var(--border);
     border-radius: 12px; background: var(--panel); color: var(--text); padding: 0;
   }
+  #trigDialog { max-width: min(1200px, 94vw); width: 94vw; }
   dialog::backdrop { background: rgba(0,0,0,.45); }
   dialog header { display: flex; justify-content: space-between; align-items: center;
     padding: 12px 16px; margin: 0; border-bottom: 1px solid var(--border); }
@@ -93,6 +106,27 @@
     <h1>CDH Multi-store Simulator</h1>
     <span id="summary">loading…</span>
   </header>
+
+  <div class="panel trigger-panel" id="triggerPanel" hidden>
+    <h2>Trigger a sync (app-gateway)</h2>
+    <form id="triggerForm">
+      <select id="trigDataset">
+        <option value="employees">employees (store)</option>
+        <option value="menu">menu (store)</option>
+        <option value="store">store (store)</option>
+        <option value="roles">roles (global)</option>
+        <option value="payment-types">payment-types (global)</option>
+      </select>
+      <input type="text" id="trigStoreCode" placeholder="Store code — e.g. S001" />
+      <label><input type="checkbox" id="trigIsTest" /> Preview only (isTest)</label>
+      <button type="submit" class="primary">Trigger</button>
+    </form>
+  </div>
+  <div class="panel trigger-panel disabled" id="triggerDisabled" hidden>
+    Self-serve trigger isn't configured — set <code>GATEWAY_ADMIN_BASE_URL</code>,
+    <code>GATEWAY_ADMIN_USERNAME</code>, and <code>GATEWAY_ADMIN_PASSWORD</code> in
+    <code>.env</code> to trigger syncs from here instead of Swagger.
+  </div>
 
   <form id="addForm">
     <input type="text" id="codes" placeholder="Add store codes, comma-separated — e.g. S004, S005, KFCCAV07" />
@@ -122,6 +156,13 @@
     </span>
   </header>
   <pre class="mono" id="dsBody"></pre>
+</dialog>
+<dialog id="trigDialog">
+  <header>
+    <strong id="trigTitle"></strong>
+    <button onclick="trigDialog.close()">Close</button>
+  </header>
+  <pre class="mono" id="trigBody"></pre>
 </dialog>
 <div id="toast"></div>
 
@@ -163,6 +204,10 @@ function render() {
           `<span class="chip" data-ds="${esc(s.storeCode)}|${esc(type)}"
              title="hash ${esc(v.contentHash || '')} · ${esc(v.appliedAt || '')}">${esc(type)} v${v.version}</span>`).join('')
       : '<span class="muted">none yet</span>';
+    const armed = Object.entries(s.pendingFailureInjections || {});
+    const armedChips = armed.map(([type, n]) =>
+      `<span class="chip warn" data-clear-fail="${esc(s.storeCode)}|${esc(type)}"
+         title="Next ${n} apply(s) of ${esc(type)} will be forced to FAIL — click to clear">⚠ ${esc(type)} ×${n}</span>`).join('');
     const last = s.recentEvents[0];
     const evRow = expanded.has(s.storeCode)
       ? `<tr class="events"><td colspan="6"><ul>` +
@@ -179,7 +224,7 @@ function render() {
         <td><span class="badge ${s.running ? 'ok' : 'off'}">${s.running ? 'consuming' : 'stopped'}</span></td>
         <td class="mono">${esc(s.queue)}<br/><span class="muted">${s.queueStats
           ? `${s.queueStats.messageCount} msg · ${s.queueStats.consumerCount} consumer(s)` : '—'}</span></td>
-        <td>${chips}</td>
+        <td>${chips}${armedChips}</td>
         <td>${last
           ? `<span class="ev ${esc(last.type)}">${esc(last.type.toUpperCase())}</span> ${esc(last.message)}`
           : '<span class="muted">—</span>'}</td>
@@ -188,6 +233,7 @@ function render() {
             ? `<button data-stop="${esc(s.storeCode)}" title="Pause consuming; queue is kept and the store stays listed as stopped">Stop</button>`
             : `<button class="primary" data-start="${esc(s.storeCode)}" title="Resume consuming">Start</button>`}
           <button data-purge="${esc(s.storeCode)}" title="Empty the queue's pending messages; queue, bindings, and consumer are untouched">Purge</button>
+          <button data-fail="${esc(s.storeCode)}" title="Force the next apply(s) of a dataset type to FAIL, to test the FAILED-ack path">Fail…</button>
           <button class="danger" data-wipe-all="${esc(s.storeCode)}" title="Delete ALL locally applied datasets (state + files); the queue and consumer are untouched">Wipe All</button>
           <button class="danger" data-delete="${esc(s.storeCode)}" title="Remove from the fleet and DELETE the broker queue">Delete</button>
         </td>
@@ -221,12 +267,65 @@ document.getElementById('addForm').addEventListener('submit', async (ev) => {
   } catch (e) { toast(e.message); }
 });
 
+const STORE_SCOPED_DATASETS = new Set(['employees', 'menu', 'store']);
+
+function syncTriggerStoreCodeField() {
+  const dataset = document.getElementById('trigDataset').value;
+  const storeCodeInput = document.getElementById('trigStoreCode');
+  const scoped = STORE_SCOPED_DATASETS.has(dataset);
+  storeCodeInput.disabled = !scoped;
+  storeCodeInput.placeholder = scoped
+    ? 'Store code — e.g. S001'
+    : '(not used — this dataset is company-wide)';
+  if (!scoped) storeCodeInput.value = '';
+}
+
+async function checkTriggerStatus() {
+  try {
+    const { configured } = await api('/api/trigger/status');
+    document.getElementById('triggerPanel').hidden = !configured;
+    document.getElementById('triggerDisabled').hidden = configured;
+  } catch {
+    document.getElementById('triggerPanel').hidden = true;
+    document.getElementById('triggerDisabled').hidden = true;
+  }
+}
+
+document.getElementById('trigDataset').addEventListener('change', syncTriggerStoreCodeField);
+syncTriggerStoreCodeField();
+
+document.getElementById('triggerForm').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const dataset = document.getElementById('trigDataset').value;
+  const storeCode = document.getElementById('trigStoreCode').value.trim();
+  const isTest = document.getElementById('trigIsTest').checked;
+  if (STORE_SCOPED_DATASETS.has(dataset) && !storeCode) {
+    toast(`${dataset} needs a store code`);
+    return;
+  }
+  try {
+    const result = await api(`/api/trigger/${dataset}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ storeCode, isTest }),
+    });
+    toast(isTest ? `Preview OK — ${dataset}` : `Triggered ${dataset}${storeCode ? ` for ${storeCode}` : ''}`);
+    document.getElementById('trigTitle').textContent =
+      `${dataset}${storeCode ? ' · ' + storeCode : ''}${isTest ? ' (preview)' : ''}`;
+    document.getElementById('trigBody').textContent = JSON.stringify(result.response, null, 2);
+    document.getElementById('trigDialog').showModal();
+    refresh();
+  } catch (e) { toast(e.message); }
+});
+
 rows.addEventListener('click', async (ev) => {
   const stop = ev.target.closest('[data-stop]');
   const start = ev.target.closest('[data-start]');
   const del = ev.target.closest('[data-delete]');
   const purge = ev.target.closest('[data-purge]');
   const wipeAll = ev.target.closest('[data-wipe-all]');
+  const fail = ev.target.closest('[data-fail]');
+  const clearFail = ev.target.closest('[data-clear-fail]');
   const chip = ev.target.closest('[data-ds]');
   if (wipeAll) {
     ev.stopPropagation();
@@ -272,6 +371,36 @@ rows.addEventListener('click', async (ev) => {
     } catch (e) { toast(e.message); }
     return;
   }
+  if (fail) {
+    ev.stopPropagation();
+    const code = fail.dataset.fail;
+    const type = prompt(`Dataset type to fail on ${code} (e.g. employees, menu, roles, payment-types, store):`);
+    if (!type || !type.trim()) return;
+    const raw = prompt(`How many applies of ${type.trim()} should fail?`, '1');
+    if (raw === null) return;
+    const times = Number(raw);
+    if (!Number.isFinite(times) || times <= 0) { toast('Enter a positive number'); return; }
+    try {
+      await api(`/api/fleet/stores/${code}/inject-failure`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ datasetType: type.trim(), times }),
+      });
+      toast(`Armed ${times} failure(s) for ${type.trim()} on ${code}`);
+      refresh();
+    } catch (e) { toast(e.message); }
+    return;
+  }
+  if (clearFail) {
+    ev.stopPropagation();
+    const [code, type] = clearFail.dataset.clearFail.split('|');
+    try {
+      await api(`/api/fleet/stores/${code}/inject-failure/${type}`, { method: 'DELETE' });
+      toast(`Cleared failure injection for ${type} on ${code}`);
+      refresh();
+    } catch (e) { toast(e.message); }
+    return;
+  }
   if (chip) {
     ev.stopPropagation();
     const [code, type] = chip.dataset.ds.split('|');
@@ -308,6 +437,7 @@ document.getElementById('dsWipeBtn').addEventListener('click', async () => {
 
 refresh();
 setInterval(refresh, 2000);
+checkTriggerStatus();
 </script>
 </body>
 </html>

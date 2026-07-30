@@ -79,15 +79,28 @@ export class AppConfigService {
     return this.configService.get('DATA_DIR') ?? './data';
   }
 
-  /** Head-office base URL for the reconcile pull path; unset → log-only hook. */
-  getReconcileBaseUrl(): string | undefined {
-    return this.configService.get('RECONCILE_BASE_URL') || undefined;
+  /**
+   * app-gateway base URL for the self-serve trigger panel (calls the real
+   * POST /store-data-sync/<dataset> endpoints instead of needing Swagger open
+   * separately). Unset -> the trigger feature stays fully disabled.
+   */
+  getGatewayAdminBaseUrl(): string | undefined {
+    return this.configService.get('GATEWAY_ADMIN_BASE_URL') || undefined;
   }
 
-  getReconcileSnapshotPath(): string {
+  /** Credentials for a real, verified CDH user — sign-in goes through the same /auth/sign-in as any user. */
+  getGatewayAdminUsername(): string | undefined {
+    return this.configService.get('GATEWAY_ADMIN_USERNAME') || undefined;
+  }
+
+  getGatewayAdminPassword(): string | undefined {
+    return this.configService.get('GATEWAY_ADMIN_PASSWORD') || undefined;
+  }
+
+  getGatewayAdminDeviceName(): string {
     return (
-      this.configService.get('RECONCILE_SNAPSHOT_PATH') ||
-      '/api/v1/store-data-sync/snapshot'
+      this.configService.get('GATEWAY_ADMIN_DEVICE_NAME') ||
+      'fusion-cdh-store-consumer'
     );
   }
 }

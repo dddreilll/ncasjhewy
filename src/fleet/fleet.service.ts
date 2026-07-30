@@ -13,12 +13,17 @@ import {
 } from 'amqp-connection-manager';
 import { readFile } from 'fs/promises';
 import { join } from 'path';
-import { AppConfigService, isValidStoreCode } from '../config/app-config.service';
-import { AppliedVersion, FileAppliedVersionStore } from './applied-version.store';
+import {
+  AppConfigService,
+  isValidStoreCode,
+} from '../config/app-config.service';
+import {
+  AppliedVersion,
+  FileAppliedVersionStore,
+} from './applied-version.store';
 import { FileDatasetApplier } from './dataset-applier';
 import { EdgeConsumer, EdgeEvent } from './edge-consumer';
 import { FleetRegistry } from './fleet-registry';
-import { Reconciler } from './reconciler';
 
 export interface StoreStatus {
   storeCode: string;
@@ -28,6 +33,7 @@ export interface StoreStatus {
   applied: Record<string, AppliedVersion>;
   queueStats: { messageCount: number; consumerCount: number } | null;
   recentEvents: EdgeEvent[];
+  pendingFailureInjections: Record<string, number>;
 }
 
 /**
@@ -130,7 +136,9 @@ export class FleetService implements OnModuleInit, OnModuleDestroy {
       this.deleting.add(consumer.queueName);
       try {
         await this.adminChannel?.deleteQueue(consumer.queueName);
-        this.logger.log(`Removed ${storeCode} and deleted ${consumer.queueName}`);
+        this.logger.log(
+          `Removed ${storeCode} and deleted ${consumer.queueName}`,
+        );
       } finally {
         this.deleting.delete(consumer.queueName);
       }
@@ -155,7 +163,9 @@ export class FleetService implements OnModuleInit, OnModuleDestroy {
     if (!consumer.isRunning) return;
 
     await consumer.stop();
-    this.logger.log(`Stopped ${storeCode} — queue ${consumer.queueName} kept, still listed`);
+    this.logger.log(
+      `Stopped ${storeCode} — queue ${consumer.queueName} kept, still listed`,
+    );
   }
 
   /** Resume consuming for a store previously paused with stopStore(). */
@@ -184,7 +194,9 @@ export class FleetService implements OnModuleInit, OnModuleDestroy {
 
     const reply = await this.adminChannel?.purgeQueue(consumer.queueName);
     const messageCount = reply?.messageCount ?? 0;
-    this.logger.log(`Purged ${messageCount} message(s) from ${consumer.queueName}`);
+    this.logger.log(
+      `Purged ${messageCount} message(s) from ${consumer.queueName}`,
+    );
     return { messageCount };
   }
 
@@ -198,6 +210,7 @@ export class FleetService implements OnModuleInit, OnModuleDestroy {
         applied: await consumer.appliedVersions(),
         queueStats: await this.queueStats(consumer.queueName),
         recentEvents: consumer.recentEvents,
+        pendingFailureInjections: consumer.pendingFailureInjections,
       })),
     );
   }
@@ -246,6 +259,27 @@ export class FleetService implements OnModuleInit, OnModuleDestroy {
     await consumer.wipeAllDatasets();
   }
 
+  /**
+   * Force the next `times` apply attempt(s) of `datasetType` on this store to
+   * fail, so a real FAILED ack + store_sync_state row can be produced on
+   * demand instead of only via an accidental bug. See EdgeConsumer.injectFailure.
+   */
+  injectFailure(storeCode: string, datasetType: string, times: number): void {
+    const consumer = this.consumers.get(storeCode);
+    if (!consumer) {
+      throw new NotFoundException(`Store ${storeCode} is not in the fleet`);
+    }
+    consumer.injectFailure(datasetType, times);
+  }
+
+  clearFailureInjection(storeCode: string, datasetType: string): void {
+    const consumer = this.consumers.get(storeCode);
+    if (!consumer) {
+      throw new NotFoundException(`Store ${storeCode} is not in the fleet`);
+    }
+    consumer.clearFailureInjection(datasetType);
+  }
+
   private startConsumer(storeCode: string): void {
     const dataDir = this.config.getDataDir();
     const edgeLogger = new Logger(`Edge:${storeCode}`);
@@ -259,11 +293,6 @@ export class FleetService implements OnModuleInit, OnModuleDestroy {
       },
       FileAppliedVersionStore.forStore(dataDir, storeCode),
       FileDatasetApplier.forStore(dataDir, storeCode, edgeLogger),
-      new Reconciler(
-        this.config.getReconcileBaseUrl(),
-        this.config.getReconcileSnapshotPath(),
-        edgeLogger,
-      ),
     );
     consumer.start();
     this.consumers.set(storeCode, consumer);
@@ -279,7 +308,10 @@ export class FleetService implements OnModuleInit, OnModuleDestroy {
     try {
       const reply = await this.adminChannel?.checkQueue(queue);
       return reply
-        ? { messageCount: reply.messageCount, consumerCount: reply.consumerCount }
+        ? {
+            messageCount: reply.messageCount,
+            consumerCount: reply.consumerCount,
+          }
         : null;
     } catch {
       return null;

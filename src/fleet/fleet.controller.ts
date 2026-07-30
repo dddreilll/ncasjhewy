@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -21,6 +22,8 @@ import { FleetService, StoreStatus } from './fleet.service';
  *   GET    /api/fleet/stores/:code/datasets/:type      inspect an applied dataset
  *   DELETE /api/fleet/stores/:code/datasets/:type      wipe one locally applied dataset (state + file only)
  *   DELETE /api/fleet/stores/:code/datasets            wipe every locally applied dataset for the store
+ *   POST   /api/fleet/stores/:code/inject-failure { datasetType, times? }  force the next apply(s) to FAIL
+ *   DELETE /api/fleet/stores/:code/inject-failure/:type  clear a pending failure injection
  */
 @Controller('api/fleet')
 export class FleetController {
@@ -98,5 +101,29 @@ export class FleetController {
   ): Promise<{ storeCode: string; wiped: true }> {
     await this.fleet.wipeAllDatasets(code);
     return { storeCode: code, wiped: true };
+  }
+
+  @Post('stores/:code/inject-failure')
+  async injectFailure(
+    @Param('code') code: string,
+    @Body('datasetType') datasetType: string,
+    @Body('times') times?: number,
+  ): Promise<{ storeCode: string; datasetType: string; times: number }> {
+    if (!datasetType) {
+      throw new BadRequestException('datasetType is required');
+    }
+    const parsed = Number(times);
+    const n = Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 1;
+    this.fleet.injectFailure(code, datasetType, n);
+    return { storeCode: code, datasetType, times: n };
+  }
+
+  @Delete('stores/:code/inject-failure/:type')
+  async clearInjectFailure(
+    @Param('code') code: string,
+    @Param('type') type: string,
+  ): Promise<{ storeCode: string; datasetType: string; cleared: true }> {
+    this.fleet.clearFailureInjection(code, type);
+    return { storeCode: code, datasetType: type, cleared: true };
   }
 }

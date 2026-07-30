@@ -7,5 +7,6 @@ import { UiController } from './ui.controller';
 @Module({
   controllers: [FleetController, UiController],
   providers: [AppConfigService, FleetService],
+  exports: [AppConfigService],
 })
 export class FleetModule {}

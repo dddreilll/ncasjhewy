@@ -15,7 +15,6 @@ import {
 } from '../contracts/data-sync';
 import { AppliedVersionStore } from './applied-version.store';
 import { DatasetApplier } from './dataset-applier';
-import { Reconciler } from './reconciler';
 
 export interface EdgeConsumerOptions {
   exchange: string;
@@ -25,7 +24,8 @@ export interface EdgeConsumerOptions {
 
 export interface EdgeEvent {
   at: string;
-  type: 'applied' | 'skipped' | 'gap' | 'failed' | 'reconciled' | 'dropped' | 'wiped';
+  type:
+    'applied' | 'skipped' | 'gap' | 'failed' | 'dropped' | 'wiped' | 'armed';
   message: string;
 }
 
@@ -41,9 +41,10 @@ const MAX_EVENTS = 50;
 export class EdgeConsumer {
   private readonly logger: Logger;
   private channelWrapper?: ChannelWrapper;
-  private readonly reconciling = new Set<string>();
   private readonly events: EdgeEvent[] = [];
   private running = false;
+  /** datasetType -> remaining applies to force-fail, for FAILED-ack testing. */
+  private readonly failureInjections = new Map<string, number>();
 
   constructor(
     private readonly storeCode: string,
@@ -51,7 +52,6 @@ export class EdgeConsumer {
     private readonly options: EdgeConsumerOptions,
     private readonly appliedStore: AppliedVersionStore,
     private readonly applier: DatasetApplier,
-    private readonly reconciler: Reconciler,
   ) {
     this.logger = new Logger(`Edge:${storeCode}`);
   }
@@ -70,6 +70,10 @@ export class EdgeConsumer {
 
   get recentEvents(): EdgeEvent[] {
     return [...this.events];
+  }
+
+  get pendingFailureInjections(): Record<string, number> {
+    return Object.fromEntries(this.failureInjections);
   }
 
   async appliedVersions() {
@@ -123,8 +127,8 @@ export class EdgeConsumer {
   /**
    * Delete the locally applied copy of one dataset (state + file) without
    * touching the broker queue or consumer — purely local, so the next
-   * matching message (redelivery, rebroadcast, or reconcile pull) re-applies
-   * it from scratch as if this store had never seen it.
+   * matching message (redelivery or rebroadcast) re-applies it from scratch
+   * as if this store had never seen it.
    */
   async wipeDataset(datasetType: string): Promise<void> {
     await this.appliedStore.clear(datasetType);
@@ -139,6 +143,37 @@ export class EdgeConsumer {
     await this.applier.deleteAllDatasets();
     this.logger.warn('Wiped ALL locally applied datasets (state + files)');
     this.record('wiped', 'All datasets wiped');
+  }
+
+  /**
+   * Arm the next `times` apply attempt(s) of `datasetType` to fail — for
+   * testing that head office correctly records and surfaces a FAILED ack.
+   * Works whether or not the dataset has ever been applied yet: arming a type
+   * with no local state forces the store's very first apply of it to fail.
+   */
+  injectFailure(datasetType: string, times: number): void {
+    const n = Math.max(1, Math.floor(times));
+    this.failureInjections.set(datasetType, n);
+    this.logger.warn(`Armed ${n} injected failure(s) for ${datasetType}`);
+    this.record(
+      'armed',
+      `${datasetType}: next ${n} apply(s) will be forced to fail`,
+    );
+  }
+
+  clearFailureInjection(datasetType: string): void {
+    if (!this.failureInjections.delete(datasetType)) return;
+    this.logger.log(`Cleared injected failure for ${datasetType}`);
+    this.record('armed', `${datasetType}: injected failure cleared`);
+  }
+
+  /** Consumes one armed failure for `datasetType`, if any. Throws to trigger the normal FAILED-ack path. */
+  private maybeInjectFailure(datasetType: string): void {
+    const remaining = this.failureInjections.get(datasetType);
+    if (!remaining) return;
+    if (remaining <= 1) this.failureInjections.delete(datasetType);
+    else this.failureInjections.set(datasetType, remaining - 1);
+    throw new Error(`Injected failure for ${datasetType} (testing)`);
   }
 
   private async handleMessage(msg: ConsumeMessage | null): Promise<void> {
@@ -178,21 +213,27 @@ export class EdgeConsumer {
         return;
       }
 
+      this.maybeInjectFailure(message.datasetType);
+
       if (message.mode === SYNC_MODES.SNAPSHOT) {
         await this.applier.applySnapshot(message);
       } else if (message.previousVersion === applied.version) {
         await this.applier.applyPartial(message);
       } else {
-        // Gap: partial lands on a stale base — never apply. Park it and reconcile.
+        // Gap: partial lands on a stale base — never apply. Dead-letter it and
+        // surface the gap on the dashboard; there is no automatic recovery —
+        // a human resolves it by manually triggering a real (non-preview)
+        // sync for this dataset via the gateway's Scalar/Swagger API (or this
+        // dashboard's Trigger panel, which calls the same endpoint), which
+        // always rebroadcasts a full SNAPSHOT and is therefore gap-safe.
         this.logger.warn(
-          `Gap on ${message.datasetType}: partial expects v${message.previousVersion} but at v${applied.version} — reconciling`,
+          `Gap on ${message.datasetType}: partial expects v${message.previousVersion} but at v${applied.version} — trigger a manual sync via the gateway API to resolve`,
         );
         this.record(
           'gap',
-          `${message.datasetType} partial expects v${message.previousVersion}, at v${applied.version}`,
+          `${message.datasetType} partial expects v${message.previousVersion}, at v${applied.version} — trigger a manual sync via the gateway API to resolve`,
         );
         this.channelWrapper.nack(msg, false, false);
-        await this.reconcile(message);
         return;
       }
 
@@ -218,54 +259,6 @@ export class EdgeConsumer {
       );
       this.channelWrapper.nack(msg, false, false);
       await this.publishAck(message, SYNC_ACK_STATUSES.FAILED, reason);
-    }
-  }
-
-  /**
-   * Close a version gap by pulling the current snapshot from head office and
-   * applying it wholesale. Guarded per dataset so a burst of gapped partials
-   * triggers one pull, not one per message.
-   */
-  private async reconcile(gapped: SyncMessage): Promise<void> {
-    if (this.reconciling.has(gapped.datasetType)) return;
-    this.reconciling.add(gapped.datasetType);
-
-    try {
-      const snapshot = await this.reconciler.fetchSnapshot(
-        gapped.datasetType,
-        gapped.scope,
-        gapped.scopeId,
-      );
-      if (!snapshot) return;
-
-      const applied = await this.appliedStore.get(snapshot.datasetType);
-      if (snapshot.version <= applied.version) {
-        this.logger.log(
-          `Reconcile pull returned v${snapshot.version}, already at v${applied.version} — nothing to do`,
-        );
-        return;
-      }
-
-      await this.applier.applySnapshot(snapshot);
-      await this.appliedStore.set(
-        snapshot.datasetType,
-        snapshot.version,
-        snapshot.contentHash,
-      );
-      await this.publishAck(snapshot, SYNC_ACK_STATUSES.APPLIED);
-      this.logger.log(
-        `Reconciled ${snapshot.datasetType} to v${snapshot.version} via snapshot pull`,
-      );
-      this.record(
-        'reconciled',
-        `${snapshot.datasetType} to v${snapshot.version} via snapshot pull`,
-      );
-    } catch (error) {
-      this.logger.error(
-        `Reconcile of ${gapped.datasetType} failed: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    } finally {
-      this.reconciling.delete(gapped.datasetType);
     }
   }
 
