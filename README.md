@@ -99,6 +99,38 @@ live through any container's dashboard. Its queue is declared on first
 connect; anything published **before** that isn't recovered automatically —
 trigger a fresh publish for it (see "Gaps" below).
 
+## Deploying with PM2 (shared staging box)
+
+For a persistent shared tester running alongside a PM2-managed `fusion-cdh-api`
+on the same host, `pm2.config.js` mirrors that repo's own ecosystem file
+convention (`dist/main.js`, `./logs/*.log`, `autorestart`, `max_memory_restart`):
+
+```bash
+npm install
+npm run build
+pm2 start pm2.config.js   # run from this repo's root, same as fusion-cdh-api
+```
+
+Notes:
+
+- `.env` on the box supplies config the same way it does for `fusion-cdh-api`'s
+  own PM2 apps — `ConfigModule.forRoot()` loads it from the process's cwd, so
+  no `env:` block is needed in `pm2.config.js`. **Do not commit it** (already
+  gitignored); if RabbitMQ/app-gateway run on that same host, the
+  `.env.example` defaults (`127.0.0.1`/`localhost`) need no changes.
+- `DATA_DIR` (default `./data`) sits outside `dist/`, so `nest build`'s
+  `deleteOutDir` never touches it — fleet state survives rebuilds/restarts.
+  Redeploys are `git pull && npm run build && pm2 restart fusion-cdh-store-consumer`.
+- **This dashboard has no login.** Nothing in front of `PORT` (default `4000`)
+  stops anyone who can reach it from triggering real syncs, injecting
+  failures, or deleting broker queues. Firewall the port to your internal
+  network/VPN, or put a reverse proxy with basic auth in front — don't expose
+  it publicly as-is.
+- `GATEWAY_ADMIN_PASSWORD` is a real account's plaintext password sitting in
+  that server's `.env`. Treat the box accordingly (limit who has shell/SSH
+  access to it) — there's no secrets manager integration here, just a `.env`
+  file, matching how `fusion-cdh-api` itself handles secrets on that host.
+
 ## How applying works
 
 - **Version guard** — `message.version <= applied.version` is acked and
