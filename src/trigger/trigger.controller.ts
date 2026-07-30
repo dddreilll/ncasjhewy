@@ -11,7 +11,12 @@ import { AdminClient } from './admin-client.service';
 
 /** Must match app-gateway's POST /store-data-sync/<dataset> routes. */
 const STORE_SCOPED_DATASETS = new Set(['employees', 'menu', 'store']);
-const GLOBAL_DATASETS = new Set(['roles', 'payment-types']);
+const GLOBAL_DATASETS = new Set([
+  'roles',
+  'payment-types',
+  'channels',
+  'cash-denominations',
+]);
 
 /**
  * Proxies to app-gateway's guarded POST /store-data-sync/<dataset> endpoints
