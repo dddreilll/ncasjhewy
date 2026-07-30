@@ -105,6 +105,7 @@
   <header>
     <h1>CDH Multi-store Simulator</h1>
     <span id="summary">loading…</span>
+    <span class="muted mono" id="baseUrl"></span>
   </header>
 
   <div class="panel trigger-panel" id="triggerPanel" hidden>
@@ -243,7 +244,7 @@ function render() {
 
 async function refresh() {
   try {
-    stores = (await api('/api/fleet')).stores
+    stores = (await api('api/fleet')).stores
       .sort((a, b) => a.storeCode.localeCompare(b.storeCode));
     render();
   } catch (e) {
@@ -256,7 +257,7 @@ document.getElementById('addForm').addEventListener('submit', async (ev) => {
   const input = document.getElementById('codes');
   if (!input.value.trim()) return;
   try {
-    const { added } = await api('/api/fleet/stores', {
+    const { added } = await api('api/fleet/stores', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ storeCodes: input.value }),
@@ -282,7 +283,7 @@ function syncTriggerStoreCodeField() {
 
 async function checkTriggerStatus() {
   try {
-    const { configured } = await api('/api/trigger/status');
+    const { configured } = await api('api/trigger/status');
     document.getElementById('triggerPanel').hidden = !configured;
     document.getElementById('triggerDisabled').hidden = configured;
   } catch {
@@ -304,7 +305,7 @@ document.getElementById('triggerForm').addEventListener('submit', async (ev) => 
     return;
   }
   try {
-    const result = await api(`/api/trigger/${dataset}`, {
+    const result = await api(`api/trigger/${dataset}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ storeCode, isTest }),
@@ -332,7 +333,7 @@ rows.addEventListener('click', async (ev) => {
     const code = wipeAll.dataset.wipeAll;
     if (!confirm(`Wipe ALL locally applied datasets for ${code}? Local state and files are deleted; the queue is untouched, but the store needs a fresh snapshot to catch back up.`)) return;
     try {
-      await api(`/api/fleet/stores/${code}/datasets`, { method: 'DELETE' });
+      await api(`api/fleet/stores/${code}/datasets`, { method: 'DELETE' });
       toast(`Wiped all datasets for ${code}`);
       refresh();
     } catch (e) { toast(e.message); }
@@ -342,7 +343,7 @@ rows.addEventListener('click', async (ev) => {
     ev.stopPropagation();
     const code = (stop || start).dataset.stop || (stop || start).dataset.start;
     try {
-      await api(`/api/fleet/stores/${code}/${stop ? 'stop' : 'start'}`, { method: 'POST' });
+      await api(`api/fleet/stores/${code}/${stop ? 'stop' : 'start'}`, { method: 'POST' });
       toast(stop ? `Stopped ${code} (queue kept)` : `Resumed ${code}`);
       refresh();
     } catch (e) { toast(e.message); }
@@ -353,7 +354,7 @@ rows.addEventListener('click', async (ev) => {
     const code = del.dataset.delete;
     if (!confirm(`Remove ${code} from the fleet and delete its broker queue? Pending messages are lost.`)) return;
     try {
-      await api(`/api/fleet/stores/${code}?delete=true`, { method: 'DELETE' });
+      await api(`api/fleet/stores/${code}?delete=true`, { method: 'DELETE' });
       toast(`Deleted ${code}'s queue`);
       expanded.delete(code);
       refresh();
@@ -365,7 +366,7 @@ rows.addEventListener('click', async (ev) => {
     const code = purge.dataset.purge;
     if (!confirm(`Purge ${code}'s pending messages? The queue and consumer are kept.`)) return;
     try {
-      const { messageCount } = await api(`/api/fleet/stores/${code}/purge`, { method: 'POST' });
+      const { messageCount } = await api(`api/fleet/stores/${code}/purge`, { method: 'POST' });
       toast(`Purged ${messageCount} message(s) from ${code}`);
       refresh();
     } catch (e) { toast(e.message); }
@@ -381,7 +382,7 @@ rows.addEventListener('click', async (ev) => {
     const times = Number(raw);
     if (!Number.isFinite(times) || times <= 0) { toast('Enter a positive number'); return; }
     try {
-      await api(`/api/fleet/stores/${code}/inject-failure`, {
+      await api(`api/fleet/stores/${code}/inject-failure`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ datasetType: type.trim(), times }),
@@ -395,7 +396,7 @@ rows.addEventListener('click', async (ev) => {
     ev.stopPropagation();
     const [code, type] = clearFail.dataset.clearFail.split('|');
     try {
-      await api(`/api/fleet/stores/${code}/inject-failure/${type}`, { method: 'DELETE' });
+      await api(`api/fleet/stores/${code}/inject-failure/${type}`, { method: 'DELETE' });
       toast(`Cleared failure injection for ${type} on ${code}`);
       refresh();
     } catch (e) { toast(e.message); }
@@ -405,7 +406,7 @@ rows.addEventListener('click', async (ev) => {
     ev.stopPropagation();
     const [code, type] = chip.dataset.ds.split('|');
     try {
-      const data = await api(`/api/fleet/stores/${code}/datasets/${type}`);
+      const data = await api(`api/fleet/stores/${code}/datasets/${type}`);
       currentDs = { code, type };
       document.getElementById('dsTitle').textContent = `${code} · ${type}`;
       document.getElementById('dsBody').textContent = JSON.stringify(data, null, 2);
@@ -428,16 +429,26 @@ document.getElementById('dsWipeBtn').addEventListener('click', async () => {
   const { code, type } = currentDs;
   if (!confirm(`Wipe ${code}'s local ${type} dataset? Local state and file are deleted; the queue is untouched, but the store needs a fresh snapshot to re-apply it.`)) return;
   try {
-    await api(`/api/fleet/stores/${code}/datasets/${type}`, { method: 'DELETE' });
+    await api(`api/fleet/stores/${code}/datasets/${type}`, { method: 'DELETE' });
     toast(`Wiped ${type} for ${code}`);
     document.getElementById('dsDialog').close();
     refresh();
   } catch (e) { toast(e.message); }
 });
 
+async function loadMeta() {
+  try {
+    const { baseUrl } = await api('api/fleet/meta');
+    document.getElementById('baseUrl').textContent = baseUrl;
+  } catch {
+    // Non-critical — just skip the label.
+  }
+}
+
 refresh();
 setInterval(refresh, 2000);
 checkTriggerStatus();
+loadMeta();
 </script>
 </body>
 </html>

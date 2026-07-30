@@ -80,6 +80,20 @@ export class AppConfigService {
   }
 
   /**
+   * This app's own public base URL (dashboard + fleet API) — e.g. the
+   * reverse-proxy/VPN URL a shared deployment is actually reached at, as
+   * opposed to localhost. Falls back to localhost for local dev. Used for
+   * the dashboard's own display and to scope CORS: only this origin (or
+   * localhost, when unset) is allowed to call the fleet API cross-origin.
+   */
+  getFleetApiBaseUrl(): string {
+    return (
+      this.configService.get('FLEET_API_BASE_URL') ||
+      `http://localhost:${this.getHttpPort()}`
+    );
+  }
+
+  /**
    * app-gateway base URL for the self-serve trigger panel (calls the real
    * POST /store-data-sync/<dataset> endpoints instead of needing Swagger open
    * separately). Unset -> the trigger feature stays fully disabled.

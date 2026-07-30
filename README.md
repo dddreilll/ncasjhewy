@@ -33,7 +33,7 @@ data-sync-service              cdh.datasync (topic)
 ## Quick start (host, against local head office)
 
 ```bash
-cp .env.example .env      # defaults match fusion-cdh-api's docker-compose RabbitMQ (localhost:5674)
+cp env.example .env      # defaults match fusion-cdh-api's docker-compose RabbitMQ (localhost:5674)
 npm install
 npm run start:dev
 ```
@@ -64,6 +64,7 @@ runtime are persisted to `data/fleet.json` and rejoin on restart. Env
 |---|---|
 | `GET /` | Dashboard UI |
 | `GET /api/fleet` | Fleet status: per store — running, queue depth/consumers, applied versions, recent events |
+| `GET /api/fleet/meta` | This app's own public base URL (`FLEET_API_BASE_URL`, shown on the dashboard) |
 | `POST /api/fleet/stores` `{"storeCodes":"S004,S005"}` | Spin up new virtual stores on the fly |
 | `POST /api/fleet/stores/:code/stop` | Pause consuming — stays listed as "stopped", queue and registry entry kept |
 | `POST /api/fleet/stores/:code/start` | Resume consuming for a stopped store |
@@ -116,8 +117,8 @@ Notes:
 - `.env` on the box supplies config the same way it does for `fusion-cdh-api`'s
   own PM2 apps — `ConfigModule.forRoot()` loads it from the process's cwd, so
   no `env:` block is needed in `pm2.config.js`. **Do not commit it** (already
-  gitignored); if RabbitMQ/app-gateway run on that same host, the
-  `.env.example` defaults (`127.0.0.1`/`localhost`) need no changes.
+  gitignored); if RabbitMQ/app-gateway run on that same host, `env.example`'s
+  defaults (`127.0.0.1`/`localhost`) need no changes.
 - `DATA_DIR` (default `./data`) sits outside `dist/`, so `nest build`'s
   `deleteOutDir` never touches it — fleet state survives rebuilds/restarts.
   Redeploys are `git pull && npm run build && pm2 restart fusion-cdh-store-consumer`.
@@ -125,11 +126,30 @@ Notes:
   stops anyone who can reach it from triggering real syncs, injecting
   failures, or deleting broker queues. Firewall the port to your internal
   network/VPN, or put a reverse proxy with basic auth in front — don't expose
-  it publicly as-is.
+  it publicly as-is. Once fronted by a proxy/VPN address, set
+  `FLEET_API_BASE_URL` to that address — it's shown on the dashboard so
+  testers know the real URL (not `localhost`), and it's the only origin
+  allowed to call the fleet API cross-origin.
 - `GATEWAY_ADMIN_PASSWORD` is a real account's plaintext password sitting in
   that server's `.env`. Treat the box accordingly (limit who has shell/SSH
   access to it) — there's no secrets manager integration here, just a `.env`
   file, matching how `fusion-cdh-api` itself handles secrets on that host.
+
+### Behind nginx on a subpath (e.g. `/dev-tools/`)
+
+The dashboard's fetch calls are relative (`api/fleet`, not `/api/fleet`), so
+it works unmodified under any subpath — nginx just needs to strip the prefix
+before proxying and redirect the no-trailing-slash form, since relative-URL
+resolution in the browser depends on the page actually ending in `/`. Full
+example: [`nginx.conf.example`](nginx.conf.example) (includes a commented-out
+`auth_basic` block — the recommended stopgap for "no login on the dashboard,"
+see above).
+
+With this, the app itself never sees `/dev-tools/` — nginx strips it before
+proxying, so no `app.setGlobalPrefix()` or other backend routing changes are
+needed. Set `FLEET_API_BASE_URL=https://your-host/dev-tools/` for accurate
+display on the dashboard; the app derives the CORS-relevant origin from just
+the scheme+host+port part, so the path suffix here is display-only and safe.
 
 ## How applying works
 
@@ -277,6 +297,7 @@ back to app-gateway's Swagger UI instead.
 | `RABBITMQ_SYNC_DLX` | `cdh.datasync.dlx` | Dead-letter exchange |
 | `RABBITMQ_SYNC_PREFETCH` | `10` | Per-store channel prefetch |
 | `DATA_DIR` | `./data` | Per-store JSON state root |
+| `FLEET_API_BASE_URL` | `http://localhost:$PORT` | This app's own public URL (reverse-proxy/VPN address once deployed); shown on the dashboard and scopes CORS |
 | `GATEWAY_ADMIN_BASE_URL` | unset | app-gateway base URL; unset disables the self-serve trigger panel entirely |
 | `GATEWAY_ADMIN_USERNAME` / `GATEWAY_ADMIN_PASSWORD` | unset | Credentials for a real, verified CDH user used to call the trigger endpoints |
 | `GATEWAY_ADMIN_DEVICE_NAME` | `fusion-cdh-store-consumer` | `deviceName` sent on sign-in (shows up in that user's active sessions) |

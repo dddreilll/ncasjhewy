@@ -1,0 +1,39 @@
+# Example nginx config for reverse-proxying fusion-cdh-store-consumer under a
+# subpath (e.g. https://your-host/dev-tools/) on a shared staging box.
+#
+# If you already have a server block for this host, just merge the two
+# `location` blocks below into it — you don't need a second `server {}`.
+# Adjust `server_name` and the upstream port (4000, or whatever PORT is set
+# to in .env / pm2.config.js) to match your setup.
+
+server {
+    listen 80;
+    server_name your-host.internal;  # <-- change this
+
+    # Redirect the no-trailing-slash form. Required: the dashboard's fetch()
+    # calls are relative (api/fleet, not /api/fleet), so they resolve against
+    # whatever URL the browser is actually on — without this redirect, a
+    # visitor landing on /dev-tools (no slash) would have every API call
+    # resolve one directory up and 404.
+    location = /dev-tools {
+        return 301 /dev-tools/;
+    }
+
+    location /dev-tools/ {
+        # The trailing slash on both the location match and proxy_pass target
+        # strips the /dev-tools/ prefix before forwarding — the app itself
+        # never sees it and needs no path-prefix configuration of its own.
+        proxy_pass http://127.0.0.1:4000/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Recommended: this dashboard has no login of its own — gate it here.
+        # Generate the password file with:
+        #   sudo htpasswd -c /etc/nginx/.htpasswd-dev-tools <username>
+        # auth_basic "CDH Store Consumer";
+        # auth_basic_user_file /etc/nginx/.htpasswd-dev-tools;
+    }
+}

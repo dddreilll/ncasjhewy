@@ -8,12 +8,14 @@ import {
   Post,
   Query,
 } from '@nestjs/common';
+import { AppConfigService } from '../config/app-config.service';
 import { FleetService, StoreStatus } from './fleet.service';
 
 /**
  * Fleet management API backing the dashboard UI.
  *
  *   GET    /api/fleet                                  fleet status
+ *   GET    /api/fleet/meta                              this app's own public base URL (FLEET_API_BASE_URL)
  *   POST   /api/fleet/stores { storeCodes }            add stores (string or string[])
  *   POST   /api/fleet/stores/:code/stop                pause consuming — stays listed as "stopped", queue kept
  *   POST   /api/fleet/stores/:code/start               resume consuming a stopped store
@@ -27,11 +29,19 @@ import { FleetService, StoreStatus } from './fleet.service';
  */
 @Controller('api/fleet')
 export class FleetController {
-  constructor(private readonly fleet: FleetService) {}
+  constructor(
+    private readonly fleet: FleetService,
+    private readonly config: AppConfigService,
+  ) {}
 
   @Get()
   async status(): Promise<{ stores: StoreStatus[] }> {
     return { stores: await this.fleet.fleetStatus() };
+  }
+
+  @Get('meta')
+  meta(): { baseUrl: string } {
+    return { baseUrl: this.config.getFleetApiBaseUrl() };
   }
 
   @Post('stores')
