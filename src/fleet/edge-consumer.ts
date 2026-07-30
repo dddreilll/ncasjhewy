@@ -23,10 +23,25 @@ export interface EdgeConsumerOptions {
 }
 
 export interface EdgeEvent {
+  id: number;
   at: string;
   type:
-    'applied' | 'skipped' | 'gap' | 'failed' | 'dropped' | 'wiped' | 'armed';
+    | 'applied'
+    | 'skipped'
+    | 'gap'
+    | 'failed'
+    | 'dropped'
+    | 'wiped'
+    | 'armed'
+    | 'ack';
   message: string;
+  /** True when this event carries a raw payload fetchable via getEventRawMessage() — the received SyncMessage for most types, or the outbound SyncAck for 'ack'. */
+  hasRawMessage: boolean;
+}
+
+/** Internal-only: EdgeEvent plus the raw payload behind it, if any — never serialized as-is (see recentEvents). */
+interface StoredEvent extends EdgeEvent {
+  rawMessage?: SyncMessage | SyncAck;
 }
 
 const MAX_EVENTS = 50;
@@ -41,7 +56,8 @@ const MAX_EVENTS = 50;
 export class EdgeConsumer {
   private readonly logger: Logger;
   private channelWrapper?: ChannelWrapper;
-  private readonly events: EdgeEvent[] = [];
+  private readonly events: StoredEvent[] = [];
+  private nextEventId = 1;
   private running = false;
   /** datasetType -> remaining applies to force-fail, for FAILED-ack testing. */
   private readonly failureInjections = new Map<string, number>();
@@ -68,8 +84,9 @@ export class EdgeConsumer {
     return this.running;
   }
 
+  /** Public event feed — strips the raw message payload to keep GET /api/fleet polling cheap; fetch it on demand via getEventRawMessage(). */
   get recentEvents(): EdgeEvent[] {
-    return [...this.events];
+    return this.events.map(({ rawMessage: _rawMessage, ...event }) => event);
   }
 
   get pendingFailureInjections(): Record<string, number> {
@@ -80,8 +97,24 @@ export class EdgeConsumer {
     return this.appliedStore.all();
   }
 
-  private record(type: EdgeEvent['type'], message: string): void {
-    this.events.unshift({ at: new Date().toISOString(), type, message });
+  /** The raw payload behind a given event, if any and if it hasn't aged out of the MAX_EVENTS ring buffer. */
+  getEventRawMessage(eventId: number): SyncMessage | SyncAck | undefined {
+    return this.events.find((event) => event.id === eventId)?.rawMessage;
+  }
+
+  private record(
+    type: EdgeEvent['type'],
+    message: string,
+    rawMessage?: SyncMessage | SyncAck,
+  ): void {
+    this.events.unshift({
+      id: this.nextEventId++,
+      at: new Date().toISOString(),
+      type,
+      message,
+      hasRawMessage: rawMessage !== undefined,
+      rawMessage,
+    });
     if (this.events.length > MAX_EVENTS) this.events.pop();
   }
 
@@ -208,6 +241,7 @@ export class EdgeConsumer {
         this.record(
           'skipped',
           `${message.datasetType} v${message.version} (already at v${applied.version})`,
+          message,
         );
         this.channelWrapper.ack(msg);
         return;
@@ -232,6 +266,7 @@ export class EdgeConsumer {
         this.record(
           'gap',
           `${message.datasetType} partial expects v${message.previousVersion}, at v${applied.version} — trigger a manual sync via the gateway API to resolve`,
+          message,
         );
         this.channelWrapper.nack(msg, false, false);
         return;
@@ -246,6 +281,7 @@ export class EdgeConsumer {
       this.record(
         'applied',
         `${message.datasetType} v${message.version} (${message.mode})`,
+        message,
       );
       await this.publishAck(message, SYNC_ACK_STATUSES.APPLIED);
     } catch (error) {
@@ -256,6 +292,7 @@ export class EdgeConsumer {
       this.record(
         'failed',
         `${message.datasetType} v${message.version}: ${reason}`,
+        message,
       );
       this.channelWrapper.nack(msg, false, false);
       await this.publishAck(message, SYNC_ACK_STATUSES.FAILED, reason);
@@ -283,6 +320,11 @@ export class EdgeConsumer {
       buildAckRoutingKey(message.datasetType, this.storeCode),
       Buffer.from(JSON.stringify(ack)),
       { persistent: true, contentType: 'application/json' },
+    );
+    this.record(
+      'ack',
+      `${ack.datasetType} v${ack.version} -> ${ack.status}`,
+      ack,
     );
   }
 }

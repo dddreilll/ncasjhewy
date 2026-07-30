@@ -26,13 +26,26 @@ interface StoredDataset {
  * Applies messages to ONE store's local dataset files
  * (`<dataDir>/<storeCode>/datasets/<type>.json`). Verifies the message's
  * contentHash before applying so corrupted/tampered payloads are rejected and
- * acked FAILED. A real POS would write into its local database instead;
- * appliers must stay idempotent — the consumer's version guard filters
+ * acked FAILED. A real POS would write into its local database instead of
+ * files; appliers must stay idempotent — the consumer's version guard filters
  * replays, but applies can be retried after a crash.
+ *
+ * `datasets/<type>.json` (the dashboard's "Applied Dataset" preview) holds
+ * the **reconstructed, current record set** — a SNAPSHOT's full payload as
+ * received, or a PARTIAL's diff already merged into what came before. That's
+ * the useful "what does this store have right now" view.
+ *
+ * `wire-messages/<type>.json` (the dashboard's "As received" preview) holds
+ * the **exact, verbatim `SyncMessage` as received off RabbitMQ** — envelope
+ * and all, unmerged, unreshaped, nothing added or dropped. Overwritten on
+ * every apply, same as the reconstructed file — only the latest wire message
+ * is kept, not a history. Also logged in full on every apply, so it's
+ * visible via `pm2 logs` too, not just the dashboard.
  */
 export class FileDatasetApplier implements DatasetApplier {
   constructor(
     private readonly datasetsDir: string,
+    private readonly wireMessagesDir: string,
     private readonly logger: Logger,
   ) {}
 
@@ -41,12 +54,17 @@ export class FileDatasetApplier implements DatasetApplier {
     storeCode: string,
     logger: Logger,
   ): FileDatasetApplier {
-    return new FileDatasetApplier(join(dataDir, storeCode, 'datasets'), logger);
+    return new FileDatasetApplier(
+      join(dataDir, storeCode, 'datasets'),
+      join(dataDir, storeCode, 'wire-messages'),
+      logger,
+    );
   }
 
   async applySnapshot(message: SyncMessage): Promise<void> {
     this.verifyHash(message);
     await this.write(message, message.payload);
+    await this.writeWireMessage(message);
     this.logger.log(
       `APPLIED SNAPSHOT ${message.datasetType} v${message.version} (schema ${message.schemaVersion})`,
     );
@@ -71,7 +89,11 @@ export class FileDatasetApplier implements DatasetApplier {
       }
       merged = {
         ...wrapper,
-        [partial.recordsField]: this.mergeRecords(array, partial, message.datasetType),
+        [partial.recordsField]: this.mergeRecords(
+          array,
+          partial,
+          message.datasetType,
+        ),
       };
     } else {
       if (!current || !Array.isArray(current.records)) {
@@ -87,6 +109,7 @@ export class FileDatasetApplier implements DatasetApplier {
     }
 
     await this.write(message, merged);
+    await this.writeWireMessage(message);
     this.logger.log(
       `APPLIED PARTIAL ${message.datasetType} v${message.previousVersion} -> v${message.version} (${partial.upserts?.length ?? 0} upserts, ${partial.deletes?.length ?? 0} deletes)`,
     );
@@ -137,14 +160,26 @@ export class FileDatasetApplier implements DatasetApplier {
 
   async deleteDataset(datasetType: string): Promise<void> {
     await rm(this.fileFor(datasetType), { force: true });
+    await rm(this.wireFileFor(datasetType), { force: true });
   }
 
   async deleteAllDatasets(): Promise<void> {
     await rm(this.datasetsDir, { recursive: true, force: true });
+    await rm(this.wireMessagesDir, { recursive: true, force: true });
   }
 
   private fileFor(datasetType: string): string {
-    return join(this.datasetsDir, `${datasetType.replace(/[^A-Za-z0-9_-]/g, '_')}.json`);
+    return join(
+      this.datasetsDir,
+      `${datasetType.replace(/[^A-Za-z0-9_-]/g, '_')}.json`,
+    );
+  }
+
+  private wireFileFor(datasetType: string): string {
+    return join(
+      this.wireMessagesDir,
+      `${datasetType.replace(/[^A-Za-z0-9_-]/g, '_')}.json`,
+    );
   }
 
   private async read(datasetType: string): Promise<StoredDataset | null> {
@@ -167,6 +202,15 @@ export class FileDatasetApplier implements DatasetApplier {
     await mkdir(dirname(file), { recursive: true });
     const tmp = `${file}.tmp`;
     await writeFile(tmp, JSON.stringify(stored, null, 2));
+    await rename(tmp, file);
+  }
+
+  /** Writes the SyncMessage exactly as received — no added/renamed/dropped fields. */
+  private async writeWireMessage(message: SyncMessage): Promise<void> {
+    const file = this.wireFileFor(message.datasetType);
+    await mkdir(dirname(file), { recursive: true });
+    const tmp = `${file}.tmp`;
+    await writeFile(tmp, JSON.stringify(message, null, 2));
     await rename(tmp, file);
   }
 }

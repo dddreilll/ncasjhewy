@@ -215,7 +215,7 @@ export class FleetService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
-  /** Raw stored dataset file for inspection in the UI. */
+  /** Reconstructed (merged, current) dataset file for inspection in the UI — "Applied Dataset". */
   async readDataset(storeCode: string, datasetType: string): Promise<unknown> {
     if (!this.consumers.has(storeCode)) {
       throw new NotFoundException(`Store ${storeCode} is not in the fleet`);
@@ -231,6 +231,29 @@ export class FleetService implements OnModuleInit, OnModuleDestroy {
     } catch {
       throw new NotFoundException(
         `No applied ${datasetType} dataset for ${storeCode}`,
+      );
+    }
+  }
+
+  /** The exact SyncMessage as last received off RabbitMQ for this dataset — "As received", unmerged/unreshaped. */
+  async readWireMessage(
+    storeCode: string,
+    datasetType: string,
+  ): Promise<unknown> {
+    if (!this.consumers.has(storeCode)) {
+      throw new NotFoundException(`Store ${storeCode} is not in the fleet`);
+    }
+    const file = join(
+      this.config.getDataDir(),
+      storeCode,
+      'wire-messages',
+      `${datasetType.replace(/[^A-Za-z0-9_-]/g, '_')}.json`,
+    );
+    try {
+      return JSON.parse(await readFile(file, 'utf8'));
+    } catch {
+      throw new NotFoundException(
+        `No wire message recorded yet for ${datasetType} on ${storeCode}`,
       );
     }
   }
@@ -278,6 +301,21 @@ export class FleetService implements OnModuleInit, OnModuleDestroy {
       throw new NotFoundException(`Store ${storeCode} is not in the fleet`);
     }
     consumer.clearFailureInjection(datasetType);
+  }
+
+  /** The exact SyncMessage that produced a given event-feed entry, if it hasn't aged out of the ring buffer. */
+  getEventRawMessage(storeCode: string, eventId: number): unknown {
+    const consumer = this.consumers.get(storeCode);
+    if (!consumer) {
+      throw new NotFoundException(`Store ${storeCode} is not in the fleet`);
+    }
+    const message = consumer.getEventRawMessage(eventId);
+    if (!message) {
+      throw new NotFoundException(
+        `No raw message available for event ${eventId} on ${storeCode} (it never had one, or has aged out of the event feed)`,
+      );
+    }
+    return message;
   }
 
   private startConsumer(storeCode: string): void {

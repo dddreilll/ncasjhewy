@@ -77,9 +77,10 @@
   .events ul { margin: 0; padding: 0; list-style: none; }
   .events li { padding: 3px 0; border-bottom: 1px dashed var(--border); }
   .events li:last-child { border-bottom: 0; }
+  .ev-raw { padding: 1px 8px; font-size: 11px; margin-left: 6px; border-radius: 6px; }
   .ev { font-weight: 600; margin-right: 8px; }
   .ev.applied { color: var(--ok); }
-  .ev.skipped { color: var(--muted); }
+  .ev.skipped, .ev.ack { color: var(--muted); }
   .ev.gap, .ev.wiped, .ev.armed { color: var(--warn); }
   .ev.failed, .ev.dropped { color: var(--err); }
   .empty { padding: 28px; text-align: center; color: var(--muted); }
@@ -154,6 +155,8 @@
   <header>
     <strong id="dsTitle"></strong>
     <span>
+      <button id="dsViewApplied" class="primary" title="Reconstructed current state — a SNAPSHOT's full payload, or PARTIALs already merged into what came before">Applied</button>
+      <button id="dsViewWire" title="The exact SyncMessage as last received off RabbitMQ — unmerged, unreshaped, nothing added or dropped">As received</button>
       <button class="danger" id="dsWipeBtn" title="Delete this store's locally applied copy (state + file); the queue is untouched">Wipe</button>
       <button onclick="dsDialog.close()">Close</button>
     </span>
@@ -217,7 +220,11 @@ function render() {
         (s.recentEvents.length
           ? s.recentEvents.map((e) =>
               `<li><span class="ev ${esc(e.type)}">${esc(e.type.toUpperCase())}</span>` +
-              `${esc(e.message)} <span class="muted mono">${esc(e.at.replace('T', ' ').slice(0, 19))}</span></li>`).join('')
+              `${esc(e.message)} <span class="muted mono">${esc(e.at.replace('T', ' ').slice(0, 19))}</span>` +
+              (e.hasRawMessage
+                ? ` <button class="ev-raw" data-event-raw="${esc(s.storeCode)}|${e.id}" title="Preview the exact SyncMessage that produced this event">Raw</button>`
+                : '') +
+              `</li>`).join('')
           : '<li class="muted">no activity yet</li>') +
         `</ul></td></tr>`
       : '';
@@ -329,6 +336,7 @@ rows.addEventListener('click', async (ev) => {
   const wipeAll = ev.target.closest('[data-wipe-all]');
   const fail = ev.target.closest('[data-fail]');
   const clearFail = ev.target.closest('[data-clear-fail]');
+  const eventRaw = ev.target.closest('[data-event-raw]');
   const chip = ev.target.closest('[data-ds]');
   if (wipeAll) {
     ev.stopPropagation();
@@ -404,14 +412,25 @@ rows.addEventListener('click', async (ev) => {
     } catch (e) { toast(e.message); }
     return;
   }
+  if (eventRaw) {
+    ev.stopPropagation();
+    const [code, id] = eventRaw.dataset.eventRaw.split('|');
+    try {
+      const data = await api(`api/fleet/stores/${code}/events/${id}/wire`);
+      document.getElementById('trigTitle').textContent = `${code} · event #${id} (as received)`;
+      document.getElementById('trigBody').textContent = JSON.stringify(data, null, 2);
+      document.getElementById('trigDialog').showModal();
+    } catch (e) { toast(e.message); }
+    return;
+  }
   if (chip) {
     ev.stopPropagation();
     const [code, type] = chip.dataset.ds.split('|');
     try {
-      const data = await api(`api/fleet/stores/${code}/datasets/${type}`);
-      currentDs = { code, type };
+      const applied = await api(`api/fleet/stores/${code}/datasets/${type}`);
+      currentDs = { code, type, applied, wire: null };
       document.getElementById('dsTitle').textContent = `${code} · ${type}`;
-      document.getElementById('dsBody').textContent = JSON.stringify(data, null, 2);
+      showDsView('applied');
       document.getElementById('dsDialog').showModal();
     } catch (e) { toast(e.message); }
     return;
@@ -425,6 +444,28 @@ rows.addEventListener('click', async (ev) => {
 });
 
 document.getElementById('dsDialog').addEventListener('close', () => { currentDs = null; });
+
+async function showDsView(view) {
+  if (!currentDs) return;
+  const appliedBtn = document.getElementById('dsViewApplied');
+  const wireBtn = document.getElementById('dsViewWire');
+  appliedBtn.classList.toggle('primary', view === 'applied');
+  wireBtn.classList.toggle('primary', view === 'wire');
+
+  if (view === 'wire' && currentDs.wire === null) {
+    try {
+      currentDs.wire = await api(`api/fleet/stores/${currentDs.code}/datasets/${currentDs.type}/wire`);
+    } catch (e) {
+      document.getElementById('dsBody').textContent = `(no wire message received yet — ${e.message})`;
+      return;
+    }
+  }
+  document.getElementById('dsBody').textContent =
+    JSON.stringify(view === 'wire' ? currentDs.wire : currentDs.applied, null, 2);
+}
+
+document.getElementById('dsViewApplied').addEventListener('click', () => showDsView('applied'));
+document.getElementById('dsViewWire').addEventListener('click', () => showDsView('wire'));
 
 document.getElementById('dsWipeBtn').addEventListener('click', async () => {
   if (!currentDs) return;

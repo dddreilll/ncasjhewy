@@ -71,11 +71,13 @@ runtime are persisted to `data/fleet.json` and rejoin on restart. Env
 | `DELETE /api/fleet/stores/:code` | Remove a store from the fleet entirely (untracked, won't rejoin on restart); **keeps** its queue |
 | `DELETE /api/fleet/stores/:code?delete=true` | Same, and also deletes the broker queue |
 | `POST /api/fleet/stores/:code/purge` | Empty the store's pending messages; queue, bindings, and consumer are kept |
-| `GET /api/fleet/stores/:code/datasets/:type` | Inspect a store's applied dataset |
+| `GET /api/fleet/stores/:code/datasets/:type` | Inspect a store's applied (reconstructed) dataset |
+| `GET /api/fleet/stores/:code/datasets/:type/wire` | Inspect the exact `SyncMessage` as last received off RabbitMQ (unmerged) |
 | `DELETE /api/fleet/stores/:code/datasets/:type` | Wipe one locally applied dataset (state + file only) — re-applies from the next matching message |
 | `DELETE /api/fleet/stores/:code/datasets` | Wipe every locally applied dataset for the store |
 | `POST /api/fleet/stores/:code/inject-failure` `{"datasetType":"employees","times":1}` | Force the next N apply(s) of a dataset type to fail — produces a real `FAILED` ack |
 | `DELETE /api/fleet/stores/:code/inject-failure/:type` | Clear a pending failure injection before it fires |
+| `GET /api/fleet/stores/:code/events/:eventId/wire` | The exact `SyncMessage` behind one specific event-feed entry (404 once evicted from the ring buffer) |
 | `GET /api/trigger/status` | Whether the self-serve trigger is configured (see below) |
 | `POST /api/trigger/:dataset` `{"storeCode":"S001","isTest":false}` | Proxy to app-gateway's real `POST /store-data-sync/:dataset` |
 
@@ -164,6 +166,58 @@ the scheme+host+port part, so the path suffix here is display-only and safe.
   and the gap is only ever surfaced, never auto-resolved (see "Gaps" below).
 - **Failure** — message dead-lettered to `cdh.datasync.dlx`, `FAILED` ack sent
   with the error, visible in head office's `store_sync_state`.
+
+### Two views of every dataset: Applied vs. As received
+
+Clicking a dataset chip opens a dialog with two toggleable views:
+
+- **Applied** (default) — `data/<storeCode>/datasets/<type>.json`, also
+  `GET /api/fleet/stores/:code/datasets/:type`. The **reconstructed, current
+  record set**: a SNAPSHOT's full payload as received, or a PARTIAL's
+  `{ upserts, deletes }` already merged into whatever came before. Answers
+  "what does this store have right now."
+- **As received** — `data/<storeCode>/wire-messages/<type>.json`, also
+  `GET /api/fleet/stores/:code/datasets/:type/wire`. The **exact, verbatim
+  `SyncMessage` as last received off RabbitMQ** — the whole envelope,
+  unmerged, unreshaped, nothing added or dropped. For a PARTIAL apply this is
+  genuinely just the diff that was sent (`{ upserts, deletes }`), not a full
+  record set — that's the honest answer to "what did head office actually
+  publish for this version."
+
+Both files are overwritten on every apply (latest only, not a history) — so
+they only ever show the dataset's *current* state and *most recent* wire
+message. For anything further back, expand a store's event feed (click the
+row): any entry with a raw payload behind it has a small **Raw** button that
+opens that *specific* event's exact JSON (`GET
+/api/fleet/stores/:code/events/:eventId/wire`), even if it's since been
+superseded by later versions. This is genuinely per-event, not just "the
+latest" — e.g. you can compare the v2 SNAPSHOT and v3 PARTIAL from the
+screenshot above side by side. Event history is an in-memory ring buffer
+(`MAX_EVENTS = 50` per store) — once an event ages out, its raw payload is
+gone with it (the button won't appear on the next poll for anything already
+evicted).
+
+Two kinds of raw payload show up this way, covering both directions of
+traffic:
+
+- **Inbound** — `APPLIED`, `SKIPPED`, `GAP`, `FAILED` events carry the exact
+  `SyncMessage` this store received off RabbitMQ for that attempt.
+- **Outbound** — every `ACK` event (one per `publishAck` call — i.e. after
+  every successful apply and every failure, mirroring what head office
+  actually receives) carries the exact `SyncAck` this store published back:
+  `{ storeCode, datasetType, version, status, contentHash, error? }`. This is
+  the ack *activity log* — a dedicated feed entry for the moment the
+  acknowledgement was sent, separate from the `APPLIED`/`FAILED` entry for
+  the apply attempt itself, so you can see both "did we apply it" and "did we
+  tell head office" as distinct events. `SKIPPED` and `GAP` never produce an
+  ack (matching real pipeline behavior — see "How applying works" above), so
+  they won't have a corresponding `ACK` entry.
+
+The exact same "As received" content is also logged in full on every apply
+(`RAW <mode> <type> vN (as received off RabbitMQ): {...}`, right after the
+`APPLIED SNAPSHOT`/`APPLIED PARTIAL` line) — so `pm2 logs
+fusion-cdh-store-consumer` (or container logs in Fleet mode) works too, if
+you'd rather grep than click.
 
 ## Gaps (a PARTIAL landing on a stale base)
 

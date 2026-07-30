@@ -21,11 +21,13 @@ import { FleetService, StoreStatus } from './fleet.service';
  *   POST   /api/fleet/stores/:code/start               resume consuming a stopped store
  *   DELETE /api/fleet/stores/:code?delete=true          remove from the fleet entirely (delete → delete queue too)
  *   POST   /api/fleet/stores/:code/purge                empty the queue only — keeps queue, bindings, and consumer
- *   GET    /api/fleet/stores/:code/datasets/:type      inspect an applied dataset
+ *   GET    /api/fleet/stores/:code/datasets/:type      inspect an applied (reconstructed) dataset
+ *   GET    /api/fleet/stores/:code/datasets/:type/wire  inspect the exact SyncMessage as last received off RabbitMQ
  *   DELETE /api/fleet/stores/:code/datasets/:type      wipe one locally applied dataset (state + file only)
  *   DELETE /api/fleet/stores/:code/datasets            wipe every locally applied dataset for the store
  *   POST   /api/fleet/stores/:code/inject-failure { datasetType, times? }  force the next apply(s) to FAIL
  *   DELETE /api/fleet/stores/:code/inject-failure/:type  clear a pending failure injection
+ *   GET    /api/fleet/stores/:code/events/:eventId/wire  the exact SyncMessage behind one event-feed entry
  */
 @Controller('api/fleet')
 export class FleetController {
@@ -96,6 +98,14 @@ export class FleetController {
     return this.fleet.readDataset(code, type);
   }
 
+  @Get('stores/:code/datasets/:type/wire')
+  async wireMessage(
+    @Param('code') code: string,
+    @Param('type') type: string,
+  ): Promise<unknown> {
+    return this.fleet.readWireMessage(code, type);
+  }
+
   @Delete('stores/:code/datasets/:type')
   async wipeDataset(
     @Param('code') code: string,
@@ -135,5 +145,17 @@ export class FleetController {
   ): Promise<{ storeCode: string; datasetType: string; cleared: true }> {
     this.fleet.clearFailureInjection(code, type);
     return { storeCode: code, datasetType: type, cleared: true };
+  }
+
+  @Get('stores/:code/events/:eventId/wire')
+  eventWireMessage(
+    @Param('code') code: string,
+    @Param('eventId') eventId: string,
+  ): unknown {
+    const id = Number(eventId);
+    if (!Number.isFinite(id)) {
+      throw new BadRequestException('eventId must be a number');
+    }
+    return this.fleet.getEventRawMessage(code, id);
   }
 }
