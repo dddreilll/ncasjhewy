@@ -57,22 +57,25 @@ Rules that keep the fleet healthy:
   "previousVersion": 3,                // null for the first version
   "mode": "SNAPSHOT",                  // "SNAPSHOT" | "PARTIAL"
   "contentHash": "<sha256 hex>",       // hash of payload (stable key ordering)
-  "schemaVersion": 1,                  // message structure version
+  "schemaVersion": 2,                  // message structure version
   "issuedAt": "2026-07-05T02:00:00.000Z",
   "issuedBy": "system",
   "payload": { /* the dataset */ }     // SNAPSHOT: full dataset; PARTIAL: see below
 }
 ```
 
-Current dataset types: `employees` (STORE), `menu` (STORE), `roles` (GLOBAL),
-`payment-types` (GLOBAL), `transaction-types` (GLOBAL),
-`cash-denominations` (GLOBAL). New types appear without notice — handle
-unknown `datasetType` values gracefully (apply-or-ignore, don't crash).
+Current dataset types: `employees` (STORE), `menu` (STORE), `store` (STORE),
+`store-configurations` (STORE), `roles` (GLOBAL), `payment-types` (GLOBAL),
+`transaction-types` (GLOBAL), `cash-denominations` (GLOBAL), `assets` (GLOBAL).
+New types appear without notice — handle unknown `datasetType` values
+gracefully (apply-or-ignore, don't crash).
 
 **You must handle both modes.** Partial-capable datasets (`employees`, `roles`,
-`payment-types`) broadcast a PARTIAL whenever the change-set is smaller than the
-snapshot; everything else — first versions, rebroadcasts, large change-sets,
-`menu` — arrives as a SNAPSHOT. A PARTIAL payload looks like:
+`payment-types`, `transaction-types`, `cash-denominations`, `assets`,
+`store-configurations`) broadcast a PARTIAL whenever the change-set is smaller
+than the snapshot; everything else — first versions, rebroadcasts, large
+change-sets, `menu`, `store` — arrives as a SNAPSHOT. A PARTIAL payload looks
+like:
 
 ```jsonc
 {

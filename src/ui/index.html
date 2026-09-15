@@ -116,10 +116,12 @@
         <option value="employees">employees (store)</option>
         <option value="menu">menu (store)</option>
         <option value="store">store (store)</option>
+        <option value="store-configurations">store-configurations (store)</option>
         <option value="roles">roles (global)</option>
         <option value="payment-types">payment-types (global)</option>
-        <option value="channels">channels (global)</option>
+        <option value="channels">channels → transaction-types (global)</option>
         <option value="cash-denominations">cash-denominations (global)</option>
+        <option value="assets">assets (global)</option>
       </select>
       <input type="text" id="trigStoreCode" placeholder="Store code — e.g. S001" />
       <label><input type="checkbox" id="trigIsTest" /> Preview only (isTest)</label>
@@ -277,7 +279,12 @@ document.getElementById('addForm').addEventListener('submit', async (ev) => {
   } catch (e) { toast(e.message); }
 });
 
-const STORE_SCOPED_DATASETS = new Set(['employees', 'menu', 'store']);
+const STORE_SCOPED_DATASETS = new Set([
+  'employees',
+  'menu',
+  'store',
+  'store-configurations',
+]);
 
 function syncTriggerStoreCodeField() {
   const dataset = document.getElementById('trigDataset').value;

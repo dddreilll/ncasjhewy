@@ -22,6 +22,28 @@ export const DATASET_SCOPES = {
 export type DatasetScope = (typeof DATASET_SCOPES)[keyof typeof DATASET_SCOPES];
 
 /**
+ * Known dataset types synced to stores. Extend as new datasets are onboarded.
+ * String values double as the `<type>` segment of the topic routing key
+ * (`dataset.<type>.global` / `dataset.<type>.store.<code>`).
+ *
+ * Note: app-gateway triggers the transaction-types wire dataset via the
+ * `/store-data-sync/channels` HTTP route.
+ */
+export const DATASET_TYPES = {
+  EMPLOYEES: 'employees',
+  MENU: 'menu',
+  ROLES: 'roles',
+  PAYMENT_TYPES: 'payment-types',
+  TRANSACTION_TYPES: 'transaction-types',
+  CASH_DENOMINATIONS: 'cash-denominations',
+  ASSETS: 'assets',
+  STORE: 'store',
+  STORE_CONFIGURATIONS: 'store-configurations',
+} as const;
+
+export type DatasetType = (typeof DATASET_TYPES)[keyof typeof DATASET_TYPES];
+
+/**
  * How a publication's payload should be interpreted by the edge consumer.
  * - SNAPSHOT: payload is the full dataset; apply wholesale.
  * - PARTIAL:    payload is { upserts, deletes }; apply only if previousVersion === applied.
@@ -44,7 +66,7 @@ export type SyncAckStatus =
   (typeof SYNC_ACK_STATUSES)[keyof typeof SYNC_ACK_STATUSES];
 
 /** Current structural version of the message payload contract. */
-export const SYNC_SCHEMA_VERSION = 1;
+export const SYNC_SCHEMA_VERSION = 2;
 
 /** Broker topology defaults (must match head office). */
 export const SYNC_BROKER_DEFAULTS = {
