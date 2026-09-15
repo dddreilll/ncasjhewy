@@ -28,7 +28,7 @@
   header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 18px; }
   h1 { font-size: 20px; margin: 0; }
   #summary { color: var(--muted); }
-  form { display: flex; gap: 8px; margin-bottom: 18px; flex-wrap: wrap; align-items: center; }
+  form { display: flex; gap: 8px; margin-bottom: 0; flex-wrap: wrap; align-items: center; }
   input[type="text"] {
     flex: 1; min-width: 240px; padding: 8px 12px; border: 1px solid var(--border);
     border-radius: 8px; background: var(--panel); color: var(--text); font: inherit;
@@ -37,13 +37,19 @@
     padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px;
     background: var(--panel); color: var(--text); font: inherit;
   }
-  .trigger-panel { padding: 14px 16px; margin-bottom: 18px; }
-  .trigger-panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em;
-    color: var(--muted); margin: 0 0 10px; }
-  .trigger-panel form { margin-bottom: 0; }
+  .section { margin-bottom: 24px; }
+  .section > h2 {
+    font-size: 13px; text-transform: uppercase; letter-spacing: .04em;
+    color: var(--muted); margin: 0 0 10px; font-weight: 600;
+  }
+  .trigger-panel { padding: 14px 16px; }
   .trigger-panel label { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
   .trigger-panel.disabled { color: var(--muted); font-size: 13px; }
   .trigger-panel.disabled code { font-family: ui-monospace, "Cascadia Code", Menlo, monospace; }
+  .listener-panel .add-bar {
+    display: flex; gap: 8px; flex-wrap: wrap; align-items: center;
+    padding: 14px 16px; border-bottom: 1px solid var(--border);
+  }
   button {
     padding: 8px 14px; border: 1px solid var(--border); border-radius: 8px;
     background: var(--panel); color: var(--text); font: inherit; cursor: pointer;
@@ -109,48 +115,52 @@
     <span class="muted mono" id="baseUrl"></span>
   </header>
 
-  <div class="panel trigger-panel" id="triggerPanel" hidden>
-    <h2>Trigger a sync (app-gateway)</h2>
-    <form id="triggerForm">
-      <select id="trigDataset">
-        <option value="employees">employees (store)</option>
-        <option value="menu">menu (store)</option>
-        <option value="store">store (store)</option>
-        <option value="store-configurations">store-configurations (store)</option>
-        <option value="roles">roles (global)</option>
-        <option value="payment-types">payment-types (global)</option>
-        <option value="channels">channels → transaction-types (global)</option>
-        <option value="cash-denominations">cash-denominations (global)</option>
-        <option value="assets">assets (global)</option>
-      </select>
-      <input type="text" id="trigStoreCode" placeholder="Store code — e.g. S001" />
-      <label><input type="checkbox" id="trigIsTest" /> Preview only (isTest)</label>
-      <button type="submit" class="primary">Trigger</button>
-    </form>
-  </div>
-  <div class="panel trigger-panel disabled" id="triggerDisabled" hidden>
-    Self-serve trigger isn't configured — set <code>GATEWAY_ADMIN_BASE_URL</code>,
-    <code>GATEWAY_ADMIN_USERNAME</code>, and <code>GATEWAY_ADMIN_PASSWORD</code> in
-    <code>.env</code> to trigger syncs from here instead of Swagger.
-  </div>
+  <section id="syncTrigger" class="section">
+    <h2>Sync Trigger</h2>
+    <div class="panel trigger-panel" id="triggerPanel" hidden>
+      <form id="triggerForm">
+        <select id="trigDataset">
+          <option value="employees">employees (store)</option>
+          <option value="menu">menu (store)</option>
+          <option value="store">store (store)</option>
+          <option value="store-configurations">store-configurations (store)</option>
+          <option value="roles">roles (global)</option>
+          <option value="payment-types">payment-types (global)</option>
+          <option value="channels">channels → transaction-types (global)</option>
+          <option value="cash-denominations">cash-denominations (global)</option>
+          <option value="assets">assets (global)</option>
+        </select>
+        <input type="text" id="trigStoreCode" placeholder="Store code — e.g. S001" />
+        <label><input type="checkbox" id="trigIsTest" /> Preview only (isTest)</label>
+        <button type="submit" class="primary">Trigger</button>
+      </form>
+    </div>
+    <div class="panel trigger-panel disabled" id="triggerDisabled" hidden>
+      Self-serve trigger isn't configured — set <code>GATEWAY_ADMIN_BASE_URL</code>,
+      <code>GATEWAY_ADMIN_USERNAME</code>, and <code>GATEWAY_ADMIN_PASSWORD</code> in
+      <code>.env</code> to trigger syncs from here instead of Swagger.
+    </div>
+  </section>
 
-  <form id="addForm">
-    <input type="text" id="codes" placeholder="Add store codes, comma-separated — e.g. S004, S005, KFCCAV07" />
-    <button type="submit" class="primary">Add stores</button>
-  </form>
-
-  <div class="panel">
-    <table>
-      <thead>
-        <tr>
-          <th>Store</th><th>Status</th><th>Queue</th>
-          <th>Applied datasets</th><th>Last activity</th><th></th>
-        </tr>
-      </thead>
-      <tbody id="rows"></tbody>
-    </table>
-    <div id="empty" class="empty" hidden>No stores yet — add codes above to spin up virtual stores.</div>
-  </div>
+  <section id="listener" class="section">
+    <h2>Listener</h2>
+    <div class="panel listener-panel">
+      <form id="addForm" class="add-bar">
+        <input type="text" id="codes" placeholder="Add store codes, comma-separated — e.g. S004, S005, KFCCAV07" />
+        <button type="submit" class="primary">Add stores</button>
+      </form>
+      <table>
+        <thead>
+          <tr>
+            <th>Store</th><th>Status</th><th>Queue</th>
+            <th>Applied datasets</th><th>Last activity</th><th></th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <div id="empty" class="empty" hidden>No stores yet — add codes above to spin up virtual stores.</div>
+    </div>
+  </section>
 </div>
 
 <dialog id="dsDialog">
