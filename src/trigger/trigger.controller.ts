@@ -22,6 +22,8 @@ const GLOBAL_DATASETS = new Set([
   'channels',
   'cash-denominations',
   'assets',
+  'events',
+  'event-groups',
 ]);
 
 /**

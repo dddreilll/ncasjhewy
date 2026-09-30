@@ -39,6 +39,8 @@ export const DATASET_TYPES = {
   ASSETS: 'assets',
   STORE: 'store',
   STORE_CONFIGURATIONS: 'store-configurations',
+  EVENTS: 'events',
+  EVENT_GROUPS: 'event-groups',
 } as const;
 
 export type DatasetType = (typeof DATASET_TYPES)[keyof typeof DATASET_TYPES];

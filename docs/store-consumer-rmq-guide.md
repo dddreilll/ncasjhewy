@@ -66,13 +66,18 @@ Rules that keep the fleet healthy:
 
 Current dataset types: `employees` (STORE), `menu` (STORE), `store` (STORE),
 `store-configurations` (STORE), `roles` (GLOBAL), `payment-types` (GLOBAL),
-`transaction-types` (GLOBAL), `cash-denominations` (GLOBAL), `assets` (GLOBAL).
+`transaction-types` (GLOBAL), `cash-denominations` (GLOBAL), `assets` (GLOBAL),
+`events` (GLOBAL), `event-groups` (GLOBAL).
 New types appear without notice — handle unknown `datasetType` values
 gracefully (apply-or-ignore, don't crash).
 
+`event-groups` carries every non-deleted group, including hidden ones — filter on
+`isStoreVisible` and `effectiveFrom`/`effectiveTo` locally. Each event's
+`eventGroupCode` in `events` resolves against `event-groups[].code`.
+
 **You must handle both modes.** Partial-capable datasets (`employees`, `roles`,
 `payment-types`, `transaction-types`, `cash-denominations`, `assets`,
-`store-configurations`) broadcast a PARTIAL whenever the change-set is smaller
+`store-configurations`, `events`, `event-groups`) broadcast a PARTIAL whenever the change-set is smaller
 than the snapshot; everything else — first versions, rebroadcasts, large
 change-sets, `menu`, `store` — arrives as a SNAPSHOT. A PARTIAL payload looks
 like:
