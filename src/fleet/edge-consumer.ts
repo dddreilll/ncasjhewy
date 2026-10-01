@@ -244,6 +244,14 @@ export class EdgeConsumer {
           message,
         );
         this.channelWrapper.ack(msg);
+        // Still confirm with the version we hold: head office may have missed
+        // the original ack. Never echo message.version — an older replay would
+        // move head office's applied version backwards.
+        await this.confirmApplied(
+          message.datasetType,
+          applied.version,
+          applied.contentHash,
+        );
         return;
       }
 
@@ -283,7 +291,11 @@ export class EdgeConsumer {
         `${message.datasetType} v${message.version} (${message.mode})`,
         message,
       );
-      await this.publishAck(message, SYNC_ACK_STATUSES.APPLIED);
+      await this.confirmApplied(
+        message.datasetType,
+        message.version,
+        message.contentHash,
+      );
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       this.logger.error(
@@ -295,29 +307,62 @@ export class EdgeConsumer {
         message,
       );
       this.channelWrapper.nack(msg, false, false);
-      await this.publishAck(message, SYNC_ACK_STATUSES.FAILED, reason);
+      await this.publishAck(
+        message.datasetType,
+        message.version,
+        SYNC_ACK_STATUSES.FAILED,
+        message.contentHash,
+        reason,
+      );
+    }
+  }
+
+  /**
+   * APPLIED is sent after the message is already acked, so a publish failure
+   * must not fall into the FAILED path (that would nack an acked message and
+   * report a healthy store as failed). A lost ack is recoverable: the next
+   * redelivery of the same version re-confirms it via the skip path.
+   */
+  private async confirmApplied(
+    datasetType: string,
+    version: number,
+    contentHash?: string,
+  ): Promise<void> {
+    try {
+      await this.publishAck(
+        datasetType,
+        version,
+        SYNC_ACK_STATUSES.APPLIED,
+        contentHash,
+      );
+    } catch (error) {
+      this.logger.warn(
+        `Could not send APPLIED ack for ${datasetType} v${version}: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
   }
 
   private async publishAck(
-    message: SyncMessage,
+    datasetType: string,
+    version: number,
     status: SyncAckStatus,
+    contentHash?: string,
     error?: string,
   ): Promise<void> {
     if (!this.channelWrapper) return;
 
     const ack: SyncAck = {
       storeCode: this.storeCode,
-      datasetType: message.datasetType,
-      version: message.version,
+      datasetType,
+      version,
       status,
-      contentHash: message.contentHash,
+      ...(contentHash ? { contentHash } : {}),
       ...(error ? { error } : {}),
     };
 
     await this.channelWrapper.publish(
       this.options.exchange,
-      buildAckRoutingKey(message.datasetType, this.storeCode),
+      buildAckRoutingKey(datasetType, this.storeCode),
       Buffer.from(JSON.stringify(ack)),
       { persistent: true, contentType: 'application/json' },
     );
