@@ -97,16 +97,17 @@ changed by a partial. The apply rules for both modes are in
 
 ### Message contract — the ack you send
 
-After every apply attempt, publish to `cdh.datasync` with routing key
-`dataset.ack.<datasetType>.<STORE_CODE>` and a **raw JSON body** (no wrapper):
+After every apply attempt, **and after every skipped replay**, publish to
+`cdh.datasync` with routing key `dataset.ack.<datasetType>.<STORE_CODE>` and a
+**raw JSON body** (no wrapper):
 
 ```jsonc
 {
   "storeCode": "KFCCAV03",
   "datasetType": "payment-types",
-  "version": 4,
+  "version": 4,                        // APPLIED: the version you now hold
   "status": "APPLIED",                 // "APPLIED" | "FAILED"
-  "contentHash": "<from the message>",// optional
+  "contentHash": "<of that version>",  // optional
   "error": "why it failed"             // only when FAILED
 }
 ```
@@ -245,27 +246,40 @@ export class DataSyncController {
 
   private async handle(message: any, context: RmqContext) {
     const channel = context.getChannelRef();
-    const message = context.getMessage();
+    const rawMessage = context.getMessage();
+    let held: { version: number; contentHash?: string };
     try {
-      const outcome = await this.applier.apply(message); // 'applied' | 'skipped'
-      channel.ack(message);
-      if (outcome === 'applied') {
-        await this.sendAck(message, 'APPLIED');
-      }
+      // Returns the version + hash you now hold. On a skip (rule 1 in
+      // section 5) that is what you already had, not message.version.
+      held = await this.applier.apply(message);
     } catch (error) {
-      channel.nack(message, false, false); // requeue=false → dead-letter exchange
-      await this.sendAck(message, 'FAILED', (error as Error).message);
+      channel.nack(rawMessage, false, false); // requeue=false → dead-letter exchange
+      await this.sendAck(message.datasetType, message.version, 'FAILED',
+        message.contentHash, (error as Error).message);
+      return;
     }
+    channel.ack(rawMessage);
+    // Sent on apply AND on skip. Keep it out of the try: the message is
+    // already acked, so a failed publish must not turn into a FAILED ack.
+    // A lost APPLIED is re-sent on the next redelivery.
+    await this.sendAck(message.datasetType, held.version, 'APPLIED', held.contentHash)
+      .catch((error) => console.warn(`APPLIED ack not sent: ${(error as Error).message}`));
   }
 
-  private async sendAck(message: any, status: 'APPLIED' | 'FAILED', error?: string) {
+  private async sendAck(
+    datasetType: string,
+    version: number,
+    status: 'APPLIED' | 'FAILED',
+    contentHash?: string,
+    error?: string,
+  ) {
     await lastValueFrom(
-      this.ackClient.emit(`dataset.ack.${message.datasetType}.${STORE_CODE}`, {
+      this.ackClient.emit(`dataset.ack.${datasetType}.${STORE_CODE}`, {
         storeCode: STORE_CODE,
-        datasetType: message.datasetType,
-        version: message.version,
+        datasetType,
+        version,
         status,
-        contentHash: message.contentHash,
+        ...(contentHash ? { contentHash } : {}),
         ...(error ? { error } : {}),
       }),
     );
@@ -324,8 +338,11 @@ the same version are normal. Your applier must be idempotent. Persist, per
 `datasetType`, the last applied `version` (and ideally `contentHash`) in your
 local database, then:
 
-1. **`message.version <= appliedVersion`** → do nothing, `ack`, no ack
-   message needed (it's a replay).
+1. **`message.version <= appliedVersion`** → it's a replay: don't apply,
+   `ack`, then send `APPLIED` with **your stored** `appliedVersion` and its
+   `contentHash`, not the message's. Head office may have missed your earlier
+   ack, so this re-confirms where you are. Never echo `message.version` here:
+   on an older replay it would move head office's view of your store backwards.
 2. **`mode === 'SNAPSHOT'`** → replace your local copy of the dataset
    wholesale with `payload`, record the new version, `ack`, send `APPLIED`.
 3. **`mode === 'PARTIAL'` and `message.previousVersion === appliedVersion`** →
@@ -371,6 +388,7 @@ arrives as a fresh SNAPSHOT. The version guard makes this safe to repeat.
 - [ ] Every handler path acks or nacks exactly once
 - [ ] Ack client: `wildcards: true` + `noAssert: true` + pass-through serializer; `emit` awaited
 - [ ] Applied version persisted per dataset type, same transaction as the data
+- [ ] Skipped replays still send `APPLIED` with your stored version + hash
 - [ ] `STORE_CODE` available at import time (dotenv loaded first)
 - [ ] Never touch `q.sync.acks`
 
