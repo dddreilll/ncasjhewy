@@ -245,7 +245,7 @@ alerting on top of it fires — arm a store to force its next apply(s) of a
 dataset type to fail:
 
 - **Dashboard:** row action **Fail…** → enter a dataset type (`employees`,
-  `menu`, `roles`, `payment-types`, `store`) and how many applies should fail.
+  `menu`, `roles`, `payment-types`, `store-profile`) and how many applies should fail.
   An armed dataset shows as a `⚠ type ×N` chip next to that store's applied
   datasets; click the chip to clear it before it fires.
 - **API:** `POST /api/fleet/stores/:code/inject-failure {"datasetType":"...","times":1}`,
@@ -300,7 +300,7 @@ Forcing a gap on demand (rather than waiting to time a real head-office change
 against a store that happens to be behind) is deterministic:
 
 1. Pick a dataset that supports PARTIAL diffs on head office — `employees`,
-   `roles`, or `payment-types` (`menu` and `store` are snapshot-only and can
+   `roles`, or `payment-types` (`menu` and `store-profile` are snapshot-only and can
    never gap).
 2. Wipe that dataset's local state for one store: dashboard chip → **Wipe**,
    or `DELETE /api/fleet/stores/:code/datasets/:type`. This resets the

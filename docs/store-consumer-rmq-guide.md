@@ -64,10 +64,17 @@ Rules that keep the fleet healthy:
 }
 ```
 
-Current dataset types: `employees` (STORE), `menu` (STORE), `store` (STORE),
+Current dataset types: `employees` (STORE), `menu` (STORE), `store-profile` (STORE),
 `store-configurations` (STORE), `roles` (GLOBAL), `payment-types` (GLOBAL),
 `transaction-types` (GLOBAL), `cash-denominations` (GLOBAL), `assets` (GLOBAL),
 `events` (GLOBAL), `event-groups` (GLOBAL).
+
+> **Renamed:** the store profile dataset was `store` and is now `store-profile`.
+> If your app reads the store profile by dataset type, switch to
+> `store-profile`; data you hold under `store` is no longer updated. (A type
+> named `store` made your own acks match your queue's `dataset.*.store.<code>`
+> binding, so they looped back to you.)
+
 New types appear without notice — handle unknown `datasetType` values
 gracefully (apply-or-ignore, don't crash).
 
@@ -79,7 +86,7 @@ gracefully (apply-or-ignore, don't crash).
 `payment-types`, `transaction-types`, `cash-denominations`, `assets`,
 `store-configurations`, `events`, `event-groups`) broadcast a PARTIAL whenever the change-set is smaller
 than the snapshot; everything else — first versions, rebroadcasts, large
-change-sets, `menu`, `store` — arrives as a SNAPSHOT. A PARTIAL payload looks
+change-sets, `menu`, `store-profile` — arrives as a SNAPSHOT. A PARTIAL payload looks
 like:
 
 ```jsonc

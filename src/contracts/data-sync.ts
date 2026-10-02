@@ -37,7 +37,8 @@ export const DATASET_TYPES = {
   TRANSACTION_TYPES: 'transaction-types',
   CASH_DENOMINATIONS: 'cash-denominations',
   ASSETS: 'assets',
-  STORE: 'store',
+  /** Was `store`: that name made its acks match every store queue's binding. */
+  STORE_PROFILE: 'store-profile',
   STORE_CONFIGURATIONS: 'store-configurations',
   EVENTS: 'events',
   EVENT_GROUPS: 'event-groups',
