@@ -171,6 +171,12 @@ the scheme+host+port part, so the path suffix here is display-only and safe.
   nacked (dead-lettered to `cdh.datasync.dlx`) instead.
 - **Unreadable message** (not JSON) — nacked, so it dead-letters. The only
   message a store nacks.
+- **Ack validation** — head office rejects (dead-letters) an ack that isn't a
+  JSON object with `storeCode`, `datasetType`, an integer `version` of at
+  least 1 and a known `status`. It also ignores an ack for a version older
+  than the one it recorded as applied, so that ack never moves the store
+  back. Every ack this consumer sends meets those rules (see the
+  [consumer guide](docs/store-consumer-rmq-guide.md#how-head-office-checks-your-ack)).
 
 ### Two views of every dataset: Applied vs. As received
 

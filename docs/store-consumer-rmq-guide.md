@@ -134,6 +134,28 @@ ack, then ack the message. Nack (without requeue) only a message you can't
 read at all; RabbitMQ then dead-letters it, and head office sees it as failed
 with no reason.
 
+#### How head office checks your ack
+
+Head office validates every ack before it records anything. It **rejects**
+an ack when:
+
+- the body isn't a JSON object;
+- `storeCode`, `datasetType`, `version` or `status` is missing or empty;
+- `version` isn't an integer of at least 1 (`"4"` as a string is rejected);
+- `status` isn't one it knows: `APPLIED`, `SKIPPED`, `FAILED` (or `PENDING`);
+- `contentHash` or `error` is present but isn't a string.
+
+A rejected ack changes nothing for your store. Head office dead-letters it,
+its Sync Event Logs show it as a failed event from RabbitMQ (reason
+`rejected`), and only head office's service log says what was wrong. Until a
+valid ack arrives, your store keeps its last valid status, or stays "Not
+confirmed".
+
+Head office also ignores an ack for a version **older** than the one it
+already recorded as applied for your store (a late or out-of-order ack). It
+logs the ack as an event, but the ack doesn't move your store's status
+back.
+
 ---
 
 ## 2. Installation
@@ -373,7 +395,9 @@ local database, then:
    `ack`, then send `SKIPPED` with **your stored** `appliedVersion` and its
    `contentHash`, not the message's. Head office may have missed your earlier
    ack, so this re-confirms where you are. Never echo `message.version` here:
-   on an older replay it would move head office's view of your store backwards.
+   on an older replay it reports a version you don't hold. Head office ignores
+   an ack older than what it recorded as applied, so the echo only adds a
+   misleading event, and it can't confirm a newer version you hold.
 2. **`mode === 'SNAPSHOT'`** → replace your local copy of the dataset
    wholesale with `payload`, record the new version, `ack`, send `APPLIED`.
 3. **`mode === 'PARTIAL'` and `message.previousVersion === appliedVersion`** →
@@ -426,6 +450,7 @@ arrives as a fresh SNAPSHOT. The version guard makes this safe to repeat.
 - [ ] Applied version persisted per dataset type, same transaction as the data
 - [ ] Skipped replays send `SKIPPED` with your stored version + hash
 - [ ] Gaps and apply errors send `FAILED` with the reason in `error`, then ack
+- [ ] Every ack is a JSON object with `storeCode`, `datasetType`, an integer `version` of at least 1 and a known `status`; head office rejects anything else
 - [ ] `STORE_CODE` available at import time (dotenv loaded first)
 - [ ] Never touch `q.sync.acks`
 
