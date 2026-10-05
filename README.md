@@ -155,17 +155,22 @@ the scheme+host+port part, so the path suffix here is display-only and safe.
 
 ## How applying works
 
-- **Version guard** — `message.version <= applied.version` is acked and
-  skipped (idempotent replays).
+- **Version guard** — `message.version <= applied.version` is skipped
+  (idempotent replays): acked, then a `SKIPPED` ack is sent with the version
+  and hash the store holds.
 - **SNAPSHOT** — payload verified against `contentHash` (same stable-stringify
   SHA-256 as head office) and written wholesale.
 - **PARTIAL** — applied only when `previousVersion` matches the applied version;
   `{ upserts, deletes }` merged into the stored snapshot's `recordsField` array,
   matching records by `keyField`.
-- **Gap** (partial on a stale base) — never applied: the message is dead-lettered
-  and the gap is only ever surfaced, never auto-resolved (see "Gaps" below).
-- **Failure** — message dead-lettered to `cdh.datasync.dlx`, `FAILED` ack sent
-  with the error, visible in head office's `store_sync_state`.
+- **Gap** (partial on a stale base) — never applied: reported as a `FAILED`
+  ack naming the gap, then acked (see "Gaps" below).
+- **Failure** — a `FAILED` ack is sent with the error first, then the message is
+  acked; head office shows it in `store_sync_state` and its sync event log, with
+  the error as the reason. Only if that ack can't be sent is the message
+  nacked (dead-lettered to `cdh.datasync.dlx`) instead.
+- **Unreadable message** (not JSON) — nacked, so it dead-letters. The only
+  message a store nacks.
 
 ### Two views of every dataset: Applied vs. As received
 
@@ -203,15 +208,14 @@ traffic:
 - **Inbound** — `APPLIED`, `SKIPPED`, `GAP`, `FAILED` events carry the exact
   `SyncMessage` this store received off RabbitMQ for that attempt.
 - **Outbound** — every `ACK` event (one per `publishAck` call — i.e. after
-  every successful apply and every failure, mirroring what head office
-  actually receives) carries the exact `SyncAck` this store published back:
+  every apply, skip, gap and failure, mirroring what head office actually
+  receives) carries the exact `SyncAck` this store published back:
   `{ storeCode, datasetType, version, status, contentHash, error? }`. This is
   the ack *activity log* — a dedicated feed entry for the moment the
-  acknowledgement was sent, separate from the `APPLIED`/`FAILED` entry for
-  the apply attempt itself, so you can see both "did we apply it" and "did we
-  tell head office" as distinct events. `SKIPPED` and `GAP` never produce an
-  ack (matching real pipeline behavior — see "How applying works" above), so
-  they won't have a corresponding `ACK` entry.
+  acknowledgement was sent, separate from the `APPLIED`/`SKIPPED`/`GAP`/`FAILED`
+  entry for the attempt itself, so you can see both "what happened" and "did we
+  tell head office" as distinct events. A skip sends `SKIPPED`; a gap and a
+  failure send `FAILED`.
 
 The exact same "As received" content is also logged in full on every apply
 (`RAW <mode> <type> vN (as received off RabbitMQ): {...}`, right after the
@@ -221,20 +225,22 @@ you'd rather grep than click.
 
 ## Gaps (a PARTIAL landing on a stale base)
 
-There is deliberately **no automatic recovery** for a gap. When a store is
+The store never applies a gap and never fixes one by itself. When a store is
 behind and receives a PARTIAL it can't apply (`previousVersion` doesn't match
 what it has), the consumer:
 
-- dead-letters the message (nack, no requeue — it goes to `cdh.datasync.dlx`),
-- logs a `WARN ... Gap on <dataset>: partial expects vN but at vM`,
+- sends a `FAILED` ack whose `error` names the gap
+  (`Gap on <dataset>: partial expects base vN but store is at vM`), then acks
+  the message,
+- logs a `WARN` with the same text,
 - and records a `gap` event visible on the dashboard (per-store event feed /
   "Last activity" column).
 
-That's the whole signal — it's the tester's cue to fix it themselves: trigger
-a real (non-preview) sync for that dataset via app-gateway's Scalar/Swagger
-API (or this dashboard's Trigger panel, if configured — see below, it calls
-the same endpoint). A triggered sync always rebroadcasts a full **SNAPSHOT**,
-never a PARTIAL, so it's gap-safe regardless of how far behind the store is.
+Head office then shows the store as `FAILED` for that dataset, with the gap as
+the reason. Fix it from the CDH app's **Fix issues** (it resends the current
+full **SNAPSHOT** to that store), or trigger a real (non-preview) sync via
+app-gateway's Scalar/Swagger API (or this dashboard's Trigger panel — see
+below). A SNAPSHOT is gap-safe regardless of how far behind the store is.
 
 ## Fault injection (testing the FAILED-ack path)
 
@@ -253,8 +259,8 @@ dataset type to fail:
 
 Arming works even for a dataset the store has never applied yet, so you can
 also force a store's *very first* apply of something to fail. The injected
-failure consumes the real apply path (nack to the DLX, `FAILED` ack sent,
-event logged) — it's not a mock, it's the same failure handling a real
+failure consumes the real apply path (`FAILED` ack sent with the reason,
+message acked, event logged) — it's not a mock, it's the same failure handling a real
 corrupt payload would hit. Injections are in-memory and per-process; they
 don't survive a restart and aren't persisted to `data/`.
 
@@ -309,10 +315,10 @@ against a store that happens to be behind) is deterministic:
    payment type) and let it publish normally. Because the store is wiped
    (applied version 0) but head office's next publish is a PARTIAL with a
    `previousVersion` ≥ 1, the versions can never line up — the store detects
-   the gap: nacks the message and logs/records the `gap` event (see "Gaps"
-   above).
-4. Resolve it the same way any gap gets resolved: trigger a real sync for
-   that dataset via Swagger or the Trigger panel.
+   the gap: reports it as a `FAILED` ack and logs/records the `gap` event
+   (see "Gaps" above).
+4. Resolve it the same way any gap gets resolved: Fix issues in the CDH app,
+   or trigger a real sync for that dataset via Swagger or the Trigger panel.
 
 ## Known gaps
 

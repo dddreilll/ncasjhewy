@@ -104,23 +104,35 @@ changed by a partial. The apply rules for both modes are in
 
 ### Message contract — the ack you send
 
-After every apply attempt, **and after every skipped replay**, publish to
-`cdh.datasync` with routing key `dataset.ack.<datasetType>.<STORE_CODE>` and a
-**raw JSON body** (no wrapper):
+For **every message you could read** — applied, skipped or failed — publish
+to `cdh.datasync` with routing key `dataset.ack.<datasetType>.<STORE_CODE>`
+and a **raw JSON body** (no wrapper):
 
 ```jsonc
 {
   "storeCode": "KFCCAV03",
   "datasetType": "payment-types",
-  "version": 4,                        // APPLIED: the version you now hold
-  "status": "APPLIED",                 // "APPLIED" | "FAILED"
+  "version": 4,                        // APPLIED/SKIPPED: the version you now hold
+  "status": "APPLIED",                 // "APPLIED" | "SKIPPED" | "FAILED"
   "contentHash": "<of that version>",  // optional
-  "error": "why it failed"             // only when FAILED
+  "error": "why it failed"             // FAILED only: the reason head office shows
 }
 ```
 
-Head office records this in its `store_sync_state` table — it is how the CDH
-team sees your store's sync health. Missing acks look like a broken store.
+| Status    | When                                                        |
+| --------- | ----------------------------------------------------------- |
+| `APPLIED` | You applied this version                                    |
+| `SKIPPED` | You already hold this version or a newer one (a replay)     |
+| `FAILED`  | You read the message but couldn't apply it — say why in `error` |
+
+Head office records this in its `store_sync_state` table and its sync event
+log — it is how the CDH team sees your store's sync health, and a `FAILED`
+ack's `error` is the reason they see. Missing acks look like a broken store.
+
+**Never nack a message you could read.** Report a failure with a `FAILED`
+ack, then ack the message. Nack (without requeue) only a message you can't
+read at all; RabbitMQ then dead-letters it, and head office sees it as failed
+with no reason.
 
 ---
 
@@ -254,29 +266,39 @@ export class DataSyncController {
   private async handle(message: any, context: RmqContext) {
     const channel = context.getChannelRef();
     const rawMessage = context.getMessage();
-    let held: { version: number; contentHash?: string };
+    let held: { version: number; contentHash?: string; skipped: boolean };
     try {
-      // Returns the version + hash you now hold. On a skip (rule 1 in
-      // section 5) that is what you already had, not message.version.
+      // Returns the version + hash you now hold, and whether this was a skip
+      // (rule 1 in section 5) — then it is what you already had, not
+      // message.version. Throws on a gap (rule 4) or any apply error.
       held = await this.applier.apply(message);
     } catch (error) {
-      channel.nack(rawMessage, false, false); // requeue=false → dead-letter exchange
-      await this.sendAck(message.datasetType, message.version, 'FAILED',
-        message.contentHash, (error as Error).message);
+      // Read but not applied: report FAILED with the reason FIRST, then ack.
+      // A crash in between redelivers the message instead of losing the failure.
+      try {
+        await this.sendAck(message.datasetType, message.version, 'FAILED',
+          message.contentHash, (error as Error).message);
+        channel.ack(rawMessage);
+      } catch {
+        // The FAILED ack couldn't be sent: dead-letter the message instead,
+        // so head office still sees a failure (without the reason).
+        channel.nack(rawMessage, false, false);
+      }
       return;
     }
     channel.ack(rawMessage);
     // Sent on apply AND on skip. Keep it out of the try: the message is
     // already acked, so a failed publish must not turn into a FAILED ack.
-    // A lost APPLIED is re-sent on the next redelivery.
-    await this.sendAck(message.datasetType, held.version, 'APPLIED', held.contentHash)
-      .catch((error) => console.warn(`APPLIED ack not sent: ${(error as Error).message}`));
+    // A lost APPLIED/SKIPPED is re-sent on the next redelivery.
+    const status = held.skipped ? 'SKIPPED' : 'APPLIED';
+    await this.sendAck(message.datasetType, held.version, status, held.contentHash)
+      .catch((error) => console.warn(`${status} ack not sent: ${(error as Error).message}`));
   }
 
   private async sendAck(
     datasetType: string,
     version: number,
-    status: 'APPLIED' | 'FAILED',
+    status: 'APPLIED' | 'SKIPPED' | 'FAILED',
     contentHash?: string,
     error?: string,
   ) {
@@ -303,7 +325,9 @@ Two footguns here:
 - **`noAck: false` means Nest never acks for you.** Every code path through a
   handler must end in exactly one `channel.ack(...)` or
   `channel.nack(..., false, false)`, or messages sit unacked until restart and
-  then redeliver.
+  then redeliver. A message you could read always ends in `ack` — failures
+  included; `nack` is only for one you can't read, or a `FAILED` ack you
+  couldn't send.
 
 ### 4.4 The ack client
 
@@ -346,7 +370,7 @@ the same version are normal. Your applier must be idempotent. Persist, per
 local database, then:
 
 1. **`message.version <= appliedVersion`** → it's a replay: don't apply,
-   `ack`, then send `APPLIED` with **your stored** `appliedVersion` and its
+   `ack`, then send `SKIPPED` with **your stored** `appliedVersion` and its
    `contentHash`, not the message's. Head office may have missed your earlier
    ack, so this re-confirms where you are. Never echo `message.version` here:
    on an older replay it would move head office's view of your store backwards.
@@ -358,12 +382,17 @@ local database, then:
    remove every key in `deletes`, keep all other wrapper fields untouched.
    Record the new version, `ack`, send `APPLIED`.
 4. **`mode === 'PARTIAL'` on any other base version (a gap)** → do **not**
-   apply. `nack(msg, false, false)` and recover via a fresh snapshot (see
-   catch-up below). Applying a partial onto the wrong base silently corrupts
-   your data.
-5. **Apply throws** → `nack(msg, false, false)` + send `FAILED` with the error
-   message. The message dead-letters to `cdh.datasync.dlx`; head office sees
-   the failure in `store_sync_state`.
+   apply — applying a partial onto the wrong base silently corrupts your data.
+   Send `FAILED` with an `error` naming the gap (e.g. `"Gap on menu: partial
+   expects base v6 but store is at v4"`), then `ack`. Head office shows your
+   store as failed, and its Fix issues sends you a full SNAPSHOT, which is
+   always safe to apply.
+5. **Apply throws** → send `FAILED` with the error message, then `ack`. Head
+   office shows the failure, with your message as the reason, in
+   `store_sync_state` and its sync event log.
+6. **The message can't be read at all** (not JSON, no `datasetType`) → there
+   is nothing to ack about: `nack(msg, false, false)`. It dead-letters to
+   `cdh.datasync.dlx`, and head office logs it as failed with no reason.
 
 Update the stored version and the dataset **in the same local transaction**,
 so a crash between the two can't desynchronize them.
@@ -392,10 +421,11 @@ arrives as a fresh SNAPSHOT. The version guard makes this safe to repeat.
 - [ ] `wildcards: true`, `exchange: 'cdh.datasync'`, `exchangeType: 'topic'`, `noAck: false`
 - [ ] Custom deserializer registered (inbound) — without it everything dead-letters
 - [ ] Exactly two handler patterns: `dataset.*.global` and `dataset.*.store.<STORE_CODE>` — never `dataset.#`
-- [ ] Every handler path acks or nacks exactly once
+- [ ] Every handler path acks or nacks exactly once; a readable message is never nacked (failures send `FAILED`, then ack)
 - [ ] Ack client: `wildcards: true` + `noAssert: true` + pass-through serializer; `emit` awaited
 - [ ] Applied version persisted per dataset type, same transaction as the data
-- [ ] Skipped replays still send `APPLIED` with your stored version + hash
+- [ ] Skipped replays send `SKIPPED` with your stored version + hash
+- [ ] Gaps and apply errors send `FAILED` with the reason in `error`, then ack
 - [ ] `STORE_CODE` available at import time (dotenv loaded first)
 - [ ] Never touch `q.sync.acks`
 
@@ -408,6 +438,8 @@ arrives as a fresh SNAPSHOT. The version guard makes this safe to repeat.
 3. Confirm your handlers fire and your local data updates.
 4. Ask the CDH team to check `store_sync_state` — your store code should show
    `APPLIED` with the right versions. That row is the definition of "done".
+5. Trigger the same sync again unchanged: your handlers should skip it and
+   head office should log a `SKIPPED` confirmation.
 
 For reference, a working consumer implementation of this exact contract (raw
 `amqp-connection-manager`, not the Nest transport) lives in the

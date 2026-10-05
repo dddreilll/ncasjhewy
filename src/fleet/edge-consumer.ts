@@ -244,12 +244,13 @@ export class EdgeConsumer {
           message,
         );
         this.channelWrapper.ack(msg);
-        // Still confirm with the version we hold: head office may have missed
-        // the original ack. Never echo message.version — an older replay would
-        // move head office's applied version backwards.
-        await this.confirmApplied(
+        // Still confirm, as SKIPPED with the version we hold: head office may
+        // have missed the original ack. Never echo message.version — an older
+        // replay would move head office's applied version backwards.
+        await this.confirm(
           message.datasetType,
           applied.version,
+          SYNC_ACK_STATUSES.SKIPPED,
           applied.contentHash,
         );
         return;
@@ -262,21 +263,13 @@ export class EdgeConsumer {
       } else if (message.previousVersion === applied.version) {
         await this.applier.applyPartial(message);
       } else {
-        // Gap: partial lands on a stale base — never apply. Dead-letter it and
-        // surface the gap on the dashboard; there is no automatic recovery —
-        // a human resolves it by manually triggering a real (non-preview)
-        // sync for this dataset via the gateway's Scalar/Swagger API (or this
-        // dashboard's Trigger panel, which calls the same endpoint), which
-        // always rebroadcasts a full SNAPSHOT and is therefore gap-safe.
-        this.logger.warn(
-          `Gap on ${message.datasetType}: partial expects v${message.previousVersion} but at v${applied.version} — trigger a manual sync via the gateway API to resolve`,
-        );
-        this.record(
-          'gap',
-          `${message.datasetType} partial expects v${message.previousVersion}, at v${applied.version} — trigger a manual sync via the gateway API to resolve`,
-          message,
-        );
-        this.channelWrapper.nack(msg, false, false);
+        // Gap: partial lands on a stale base — never apply. Report it as a
+        // FAILED ack: head office then shows this store as failed, and its
+        // Fix issues resends a full SNAPSHOT, which is gap-safe.
+        const reason = `Gap on ${message.datasetType}: partial expects base v${message.previousVersion} but store is at v${applied.version}`;
+        this.logger.warn(`${reason} — reporting FAILED`);
+        this.record('gap', reason, message);
+        await this.reportFailure(msg, message, reason);
         return;
       }
 
@@ -291,9 +284,10 @@ export class EdgeConsumer {
         `${message.datasetType} v${message.version} (${message.mode})`,
         message,
       );
-      await this.confirmApplied(
+      await this.confirm(
         message.datasetType,
         message.version,
+        SYNC_ACK_STATUSES.APPLIED,
         message.contentHash,
       );
     } catch (error) {
@@ -306,7 +300,23 @@ export class EdgeConsumer {
         `${message.datasetType} v${message.version}: ${reason}`,
         message,
       );
-      this.channelWrapper.nack(msg, false, false);
+      await this.reportFailure(msg, message, reason);
+    }
+  }
+
+  /**
+   * A message the store could read but not apply: send the FAILED ack (with
+   * the reason) first, then ack the message, so a crash in between redelivers
+   * the message instead of losing the failure. Never nack it — the FAILED ack
+   * is the report. Only if that ack can't be sent is the message nacked, so
+   * RabbitMQ dead-letters it and head office still sees a failure.
+   */
+  private async reportFailure(
+    msg: ConsumeMessage,
+    message: SyncMessage,
+    reason: string,
+  ): Promise<void> {
+    try {
       await this.publishAck(
         message.datasetType,
         message.version,
@@ -314,30 +324,32 @@ export class EdgeConsumer {
         message.contentHash,
         reason,
       );
+      this.channelWrapper?.ack(msg);
+    } catch (error) {
+      this.logger.error(
+        `Could not send FAILED ack for ${message.datasetType} v${message.version}, dead-lettering instead: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      this.channelWrapper?.nack(msg, false, false);
     }
   }
 
   /**
-   * APPLIED is sent after the message is already acked, so a publish failure
-   * must not fall into the FAILED path (that would nack an acked message and
-   * report a healthy store as failed). A lost ack is recoverable: the next
-   * redelivery of the same version re-confirms it via the skip path.
+   * APPLIED and SKIPPED are sent after the message is already acked, so a
+   * publish failure must not fall into the FAILED path (that would report a
+   * healthy store as failed). A lost ack is recoverable: the next redelivery
+   * of the same version re-confirms it via the skip path.
    */
-  private async confirmApplied(
+  private async confirm(
     datasetType: string,
     version: number,
+    status: typeof SYNC_ACK_STATUSES.APPLIED | typeof SYNC_ACK_STATUSES.SKIPPED,
     contentHash?: string,
   ): Promise<void> {
     try {
-      await this.publishAck(
-        datasetType,
-        version,
-        SYNC_ACK_STATUSES.APPLIED,
-        contentHash,
-      );
+      await this.publishAck(datasetType, version, status, contentHash);
     } catch (error) {
       this.logger.warn(
-        `Could not send APPLIED ack for ${datasetType} v${version}: ${error instanceof Error ? error.message : String(error)}`,
+        `Could not send ${status} ack for ${datasetType} v${version}: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
   }

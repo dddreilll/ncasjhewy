@@ -60,7 +60,11 @@ export type SyncMode = (typeof SYNC_MODES)[keyof typeof SYNC_MODES];
 
 /** Result recorded by an edge after attempting to apply a message. */
 export const SYNC_ACK_STATUSES = {
+  /** Applied this version. */
   APPLIED: 'APPLIED',
+  /** Already held this version or a newer one; the ack carries the version held. */
+  SKIPPED: 'SKIPPED',
+  /** Read the message but couldn't apply it; the ack's `error` says why. */
   FAILED: 'FAILED',
   PENDING: 'PENDING',
 } as const;
